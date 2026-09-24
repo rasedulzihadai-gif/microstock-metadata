@@ -111,8 +111,31 @@
     };
   }
 
+  /**
+   * Scene 3 — seamless dot pattern on white (the "SVG pattern" case).
+   * A single flat surface: no panels, no text — but it produces many short
+   * high-contrast runs and strong periodicity, which is exactly what the
+   * pre-check must NOT mistake for a text-heavy template layout.
+   */
+  function dotPatternScene(w, h) {
+    var spacing = Math.max(16, Math.round(w / 16));
+    var radius = spacing * 0.18;
+    return function (x, y) {
+      var row = Math.floor(y / spacing);
+      var offset = (row % 2) ? spacing / 2 : 0;
+      var cx = (x - offset) % spacing;
+      var cy = y % spacing;
+      var dx = Math.min(Math.abs(cx - spacing / 2), Math.abs(cx + spacing / 2));
+      var dy = Math.abs(cy - spacing / 2);
+      var d = Math.sqrt(dx * dx + dy * dy);
+      return d <= radius ? [17, 24, 39] : [255, 255, 255];
+    };
+  }
+
   function scenePixelFn(kind, w, h) {
-    return kind === 'template_pack' ? templatePackScene(w, h) : singleBackgroundScene(w, h);
+    if (kind === 'template_pack') return templatePackScene(w, h);
+    if (kind === 'seamless_pattern') return dotPatternScene(w, h);
+    return singleBackgroundScene(w, h);
   }
 
   /** Browser helper: paint a scene onto a canvas. Returns the canvas. */
@@ -142,6 +165,7 @@
     scenes: {
       singleBackgroundScene: singleBackgroundScene,
       templatePackScene: templatePackScene,
+      dotPatternScene: dotPatternScene,
       scenePixelFn: scenePixelFn,
       paintScene: paintScene
     }

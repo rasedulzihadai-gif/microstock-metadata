@@ -152,18 +152,38 @@
       });
 
       var contentLength = kept.reduce(function (a, s) { return a + (s.end - s.start + 1); }, 0);
+
+      // How uniform are the kept segments? A seamless texture splits into many
+      // near-identical tiles; a real layout has a few differently sized regions.
+      var sizeConsistency = 0;
+      var medianWidthRatio = 1;
+      if (kept.length >= 1) {
+        var widths = kept.map(function (s) { return s.end - s.start + 1; });
+        var sortedWidths = widths.slice().sort(function (a, b) { return a - b; });
+        var median = sortedWidths[Math.floor(sortedWidths.length / 2)];
+        medianWidthRatio = length ? median / length : 1;
+        if (kept.length >= 2) {
+          var mean = widths.reduce(function (a, b) { return a + b; }, 0) / widths.length;
+          var variance = widths.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / widths.length;
+          sizeConsistency = mean > 0 ? util.clamp(1 - Math.sqrt(variance) / mean, 0, 1) : 0;
+        }
+      }
+
       return {
         count: Math.max(1, kept.length),
         gutterRatio: length ? (length - contentLength) / length : 0,
+        sizeConsistency: sizeConsistency,
+        medianWidthRatio: medianWidthRatio,
         segments: kept
       };
     }
 
     var colSeg = segments(colEdges, maxCol, w);
     var rowSeg = segments(rowEdges, maxRow, h);
-    var panelCount = Math.min(16, colSeg.count * rowSeg.count);
 
-    // Distinct colour schemes per panel -> multiple designs in one frame.
+    // Distinct colour schemes per segment -> a layout of different designs rather than
+    // one repeating surface. Computed before the tiling decision because it is one of
+    // the discriminating signals.
     var panelColorSpread = 0;
     if (colSeg.segments && rowSeg.segments && colSeg.segments.length > 0 && rowSeg.segments.length > 0) {
       var means = [];
@@ -186,6 +206,19 @@
       }
     }
 
+    // A seamless texture (dots, stripes, tiles) splits into MANY small, near-identical
+    // segments with a strong periodic signature. That is a surface, not a multi-panel
+    // layout, so it must not be counted as panels. Three things separate a texture from
+    // a layout: the tiles are small, uniform in size, AND look alike (a real layout's
+    // panels carry different designs, so their colour spread is far higher).
+    var fineXMetric = colSeg.count >= 3 && colSeg.medianWidthRatio < 0.16;
+    var fineYMetric = rowSeg.count >= 3 && rowSeg.medianWidthRatio < 0.16;
+    var tiled = structured && regularity > 0.5 && (fineXMetric || fineYMetric) &&
+      Math.max(colSeg.sizeConsistency, rowSeg.sizeConsistency) > 0.55 &&
+      panelColorSpread < 0.12;
+
+    var panelCount = tiled ? 1 : Math.min(16, colSeg.count * rowSeg.count);
+
     // High contrast between the strongest structural line and the average -> layout rules.
     var colMean = 0;
     for (var cm = 0; cm < w; cm++) colMean += colEdges[cm];
@@ -199,6 +232,8 @@
       edgeDensity: edgeDensity,
       colorCount: colorCount || 0,
       panelCount: panelCount,
+      periodicTiles: tiled,
+      tileGrid: { x: colSeg.count, y: rowSeg.count },
       gutterRatio: Math.max(colSeg.gutterRatio, rowSeg.gutterRatio),
       textBandCount: textBandCount,
       regularity: regularity,
@@ -228,16 +263,29 @@
         'composite layout: ' + signals.panelCount + ' content region(s) separated by uniform gutters');
     }
 
+    // A seamless repeating surface (dots, stripes, tiles) produces many short high-contrast
+    // runs and strong periodicity without being a layout. Discount both signals when the
+    // frame is a single region and the structure is globally periodic.
+    var periodicPattern = signals.periodicTiles ||
+      (signals.panelCount < 2 && signals.regularity >= 0.5);
+    var structureWeight = periodicPattern ? 0.25 : 1;
+    if (periodicPattern) {
+      evidence.push(signals.periodicTiles
+        ? 'regular tiled texture (' + (signals.tileGrid ? signals.tileGrid.x + '×' + signals.tileGrid.y : 'grid') +
+          ') — treated as a single surface, text-band and grid signals discounted'
+        : 'globally periodic surface — text-band and grid signals discounted');
+    }
+
     if (signals.textBandCount >= 2) {
-      add(0.18, signals.textBandCount + ' text-like band(s) (headline/paragraph blocks)');
+      add(0.18 * structureWeight, signals.textBandCount + ' text-like band(s) (headline/paragraph blocks)');
     } else if (signals.textBandCount === 1) {
-      add(0.06, 'one text-like band');
+      add(0.06 * structureWeight, 'one text-like band');
     }
 
     if (signals.regularity > 0.45) {
-      add(0.16, 'strong repeating grid regularity (' + signals.regularity.toFixed(2) + ')');
+      add(0.16 * structureWeight, 'strong repeating grid regularity (' + signals.regularity.toFixed(2) + ')');
     } else if (signals.regularity > 0.25) {
-      add(0.07, 'some repeating structure (' + signals.regularity.toFixed(2) + ')');
+      add(0.07 * structureWeight, 'some repeating structure (' + signals.regularity.toFixed(2) + ')');
     }
 
     if (signals.panelColorSpread > 0.18) {

@@ -23,6 +23,7 @@ function write(name, buffer) {
 
 write('single-background-512x384.png', fixtures.singleBackgroundPng(512, 384));
 write('template-pack-512x384.png', fixtures.templatePackPng(512, 384));
+write('seamless-dot-pattern-512x384.png', fixtures.dotPatternPng(512, 384));
 
 written.forEach(function (w) {
   console.log('wrote ' + path.relative(process.cwd(), w.file) + '  (' + Math.round(w.bytes / 1024) + ' KB)');

@@ -94,6 +94,8 @@ module.exports = {
   grayFromScene: grayFromScene,
   singleBackgroundScene: function (w, h) { return scenes.scenePixelFn('single_asset', w, h); },
   templatePackScene: function (w, h) { return scenes.scenePixelFn('template_pack', w, h); },
+  dotPatternScene: function (w, h) { return scenes.scenePixelFn('seamless_pattern', w, h); },
   singleBackgroundPng: function (w, h) { return pngFor('single_asset', w, h); },
-  templatePackPng: function (w, h) { return pngFor('template_pack', w, h); }
+  templatePackPng: function (w, h) { return pngFor('template_pack', w, h); },
+  dotPatternPng: function (w, h) { return pngFor('seamless_pattern', w, h); }
 };

@@ -189,6 +189,84 @@
       warnings + caveats;
   }
 
+  function failureView(item, ctx) {
+    var meta = item.meta || {};
+    var result = item.result;
+    var issues = result && result.issues ? result.issues : [];
+    var usage = meta.usage || {};
+    var truncated = meta.truncated || (result && result.truncatedRepair);
+
+    var hint = truncated
+      ? '<p class="callout callout-warn"><strong>The answer was cut off by the token limit.</strong> ' +
+      'Open <em>Advanced provider settings</em>, raise <code>Max tokens</code> (4096 or more is a safe default ' +
+      'for four platforms), then press Retry. The truncated answer was also salvaged where possible.</p>'
+      : '';
+
+    var diagnostics = [
+      'file: ' + item.name,
+      'provider: ' + (meta.providerId || '?') + ' · model: ' + (meta.model || '?'),
+      'attempts: ' + (meta.attempts || 1) + (meta.retried ? ' (auto-retried after a bad first answer)' : ''),
+      'latency: ' + (meta.latencyMs || 0) + ' ms',
+      'finish reason: ' + (meta.finishReason || '(none)') + (truncated ? '  <-- truncated by max tokens' : ''),
+      'tokens: ' + (usage.inputTokens || '?') + ' in / ' + (usage.outputTokens || '?') + ' out',
+      'raw answer length: ' + (ctx.rawText ? ctx.rawText.length : 0) + ' chars',
+      '',
+      'issues:',
+      issues.length
+        ? issues.map(function (i) { return '  [' + i.level + '] ' + i.code + ' — ' + i.message; }).join('\n')
+        : '  (none recorded)',
+      '',
+      'raw answer:',
+      ctx.rawText || '(empty)'
+    ].join('\n');
+
+    return '' +
+      '<header class="result-head">' +
+      '<div class="result-preview">' + (item.thumbUrl
+        ? '<img src="' + escapeHtml(item.thumbUrl) + '" alt="">'
+        : '<div class="thumb-placeholder">no preview</div>') + '</div>' +
+      '<div class="result-meta">' +
+      '<h2>' + escapeHtml(item.name) + '</h2>' +
+      '<div class="badges">' +
+      renderBadge('Status', 'generation failed', 'error') +
+      renderBadge('Model', (meta.providerId || '?') + ' · ' + (meta.model || '?')) +
+      renderBadge('Attempts', String(meta.attempts || 1)) +
+      renderBadge('Finish reason', meta.finishReason || 'n/a') +
+      '</div>' +
+      '<p class="muted">' + escapeHtml(item.error || 'The provider did not return usable metadata.') + '</p>' +
+      '</div>' +
+      '</header>' +
+      hint +
+      '<div class="result-grid">' +
+      '<section class="card">' +
+      '<h3>Why it failed</h3>' + renderIssues(issues) +
+      '<h3>Diagnostics</h3>' +
+      '<ul class="signal-list">' +
+      '<li>provider / model: ' + escapeHtml((meta.providerId || '?') + ' · ' + (meta.model || '?')) + '</li>' +
+      '<li>attempts: ' + escapeHtml(String(meta.attempts || 1)) +
+      (meta.retried ? ' — the first answer was retried automatically' : '') + '</li>' +
+      '<li>finish reason: <strong>' + escapeHtml(meta.finishReason || '(none)') + '</strong>' +
+      (truncated ? ' (token ceiling reached)' : '') + '</li>' +
+      '<li>tokens: ' + escapeHtml(String(usage.inputTokens || '?')) + ' in / ' +
+      escapeHtml(String(usage.outputTokens || '?')) + ' out</li>' +
+      '<li>latency: ' + escapeHtml(String(meta.latencyMs || 0)) + ' ms</li>' +
+      '<li>raw answer: ' + escapeHtml(String(ctx.rawText ? ctx.rawText.length : 0)) + ' chars</li>' +
+      '</ul>' +
+      '<div class="btn-row">' +
+      '<button class="btn btn-primary" data-action="retry">Retry</button>' +
+      '<button class="btn" data-action="copy-diagnostics">Copy diagnostics</button>' +
+      '<button class="btn btn-ghost" data-action="remove">Remove</button>' +
+      '</div>' +
+      '</section>' +
+      '<section class="card card-wide">' +
+      '<h3>Raw model answer</h3>' +
+      '<pre class="prompt-pre">' + escapeHtml(ctx.rawText || '(empty response)') + '</pre>' +
+      '<details class="inspector"><summary>Prompt that was sent</summary>' +
+      '<pre class="prompt-pre">' + escapeHtml(ctx.systemPrompt || '') + '</pre></details>' +
+      '</section>' +
+      '</div>';
+  }
+
   function renderResults(host, ctx) {
     var item = ctx.item;
     var body = document.getElementById('resultsBody');
@@ -211,19 +289,10 @@
     var result = item.result;
     var precheck = item.precheck;
 
-    if (item.status === 'error') {
-      body.innerHTML = '<header class="result-head"><div><h2>' + escapeHtml(item.name) +
-        '</h2><p class="muted">' + escapeHtml(item.error || 'Generation failed.') + '</p></div></header>' +
-        '<div class="btn-row"><button class="btn btn-primary" data-action="retry">Retry</button>' +
-        '<button class="btn btn-ghost" data-action="remove">Remove</button></div>';
-      return;
-    }
-
-    if (!result) {
-      body.innerHTML = '<header class="result-head"><div><h2>' + escapeHtml(item.name) +
-        '</h2><p class="muted">Status: ' + escapeHtml(item.status) +
-        (precheck ? ' · local pre-check: <strong>' + escapeHtml(precheck.contentType) + '</strong> (' +
-          Math.round(precheck.confidence * 100) + '%)' : '') + '</p></div></header>';
+    // Anything without usable metadata goes to the diagnostics view — including a
+    // "successful" call whose answer could not be parsed.
+    if (!result || !result.data) {
+      body.innerHTML = failureView(item, ctx);
       return;
     }
 

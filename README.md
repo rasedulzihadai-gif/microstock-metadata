@@ -243,7 +243,46 @@ live at `https://<you>.github.io/<repo>/`.
 
 ---
 
-## 11. Known limitations
+## 11. Troubleshooting
+
+**"Failed" in the queue / "the provider did not return usable metadata".**
+Open the item — the panel now shows *why*: the validation issues, the raw model answer, the finish reason, the
+token usage and a **Copy diagnostics** button. The most common cause is the answer being cut off:
+
+> `finish reason: length` · `tokens: 3935 in / 4096 out` · issue `json_parse_failed`
+
+A four-platform answer with 40+ keywords each can exceed a small token ceiling, and the JSON ends mid-array.
+What the app does about it automatically:
+
+1. **Truncation is detected** (`finish_reason: length` / `stop_reason: max_tokens` / `MAX_TOKENS`) and reported
+   as truncated instead of a generic failure.
+2. **The partial answer is salvaged** — the open string and containers are closed so any complete platform
+   block still survives (`json_repaired_from_truncation`), and the missing blocks are reported.
+3. **One automatic retry** with a compact-output instruction ("at most 35 keywords per platform, no commentary")
+   — reported as `auto_retry_after_truncation`. A valid first answer is never retried, so this costs nothing
+   when things work.
+
+If you see it repeatedly, raise **Advanced provider settings → Max tokens** (the default is 4096; 6144 is safe
+for four platforms) and press **Retry**.
+
+**Yellow "Issues" badge instead of green "Done".**
+Metadata was generated but the strict validation layer found blocking problems (for example a missing platform
+block after a salvage). The validation list shows each one; fix the fields inline and the export stays blocked
+until the list is clean.
+
+**`HTTP 415` on Test connection.** The request was missing `Content-Type: application/json` — fixed, and
+covered by a regression test.
+
+**Empty answer from a reasoning model.** If `content` comes back empty while the token budget was consumed, the
+model spent it before answering; raise Max tokens and retry (the error message says so explicitly).
+
+**A dot/stripe/tile pattern was suggested as a "design pack".** The pre-check now recognises regular tiled
+textures (small, uniform, identical-looking tiles) and treats them as a single surface. The suggestion is
+advisory anyway — the model's classification and the manual toggle win.
+
+---
+
+## 12. Known limitations
 
 * The model cannot know the real exported file format from a JPEG preview — that is why rule K raises
   `confirm_file_type_ai_eps` instead of asserting the format.

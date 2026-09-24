@@ -52,6 +52,26 @@
      * ------------------------------------------------------------------ */
     function noop() {}
 
+    var RETRY_INSTRUCTION = [
+      '',
+      '',
+      'IMPORTANT — your previous reply could not be used: it was either cut off before the JSON was',
+      'complete or it was not valid JSON. Reply with the JSON object ONLY, and keep it compact:',
+      '- no markdown fences, no commentary, no repetition of these instructions;',
+      '- at most 35 keywords per platform (fewer is fine — quality over count);',
+      '- no duplicated terms inside a platform\'s list.',
+      'The whole object must fit comfortably in the response limit.'
+    ].join('\n');
+
+    /** Pick the better of two validation results (data first, then fewest errors). */
+    function preferResult(a, b) {
+      if (!a) return b;
+      if (!b) return a;
+      if (!!a.data !== !!b.data) return a.data ? a : b;
+      if (a.stats.errors !== b.stats.errors) return a.stats.errors < b.stats.errors ? a : b;
+      return a;
+    }
+
     async function coreGenerate(options) {
       var providerId = options.providerId || providers.getActiveProviderId();
       var hint = options.hint && options.hint !== 'auto' ? options.hint : null;
@@ -61,22 +81,49 @@
         contentTypeHint: hint,
         precheck: precheck
       });
-      var userText = prompts.buildUserText({ filename: options.filename });
+      var baseUserText = prompts.buildUserText({ filename: options.filename });
 
-      var response = await providers.callVision(providerId, {
-        systemPrompt: systemPrompt,
-        userText: userText,
-        imageDataUrl: options.dataUrl,
-        signal: options.signal,
-        mockScenario: options.mockScenario,
-        precheckHint: precheck ? precheck.contentType : null,
-        timeoutMs: options.timeoutMs || 180000
-      });
+      var validated = null;
+      var response = null;
+      var attempts = 0;
+      var retried = false;
 
-      var validated = validate.validateAndFix(response.text, {
-        contentTypeHint: hint,
-        platforms: PLATFORMS
-      });
+      // Two attempts at most: the second uses a compact-output instruction, which
+      // recovers responses that were cut off by the token ceiling.
+      for (var attempt = 1; attempt <= 2; attempt++) {
+        attempts = attempt;
+        response = await providers.callVision(providerId, {
+          systemPrompt: systemPrompt,
+          userText: attempt === 1 ? baseUserText : baseUserText + RETRY_INSTRUCTION,
+          imageDataUrl: options.dataUrl,
+          signal: options.signal,
+          mockScenario: options.mockScenario,
+          precheckHint: precheck ? precheck.contentType : null,
+          timeoutMs: options.timeoutMs || 180000
+        });
+
+        var next = validate.validateAndFix(response.text, {
+          contentTypeHint: hint,
+          platforms: PLATFORMS
+        });
+        validated = preferResult(validated, next);
+
+        // Retry only when the answer was unusable or was cut off and salvaged.
+        var needsRetry = attempt === 1 && (next.truncatedRepair || !next.data);
+        if (!needsRetry) break;
+        retried = true;
+      }
+
+      if (retried && validated) {
+        validated.issues = (validated.issues || []).concat([{
+          level: 'warn',
+          code: 'auto_retry_after_truncation',
+          field: '*',
+          message: 'The first answer was cut off or invalid, so it was automatically retried with a ' +
+            'compact-output instruction. Raise "Max tokens" in the provider panel to avoid the retry.'
+        }]);
+        validated.stats.warnings++;
+      }
 
       var built = {};
       if (validated.data && validated.data.platforms) {
@@ -90,13 +137,17 @@
       var descriptor = providers.byId[providerId] || {};
       return {
         providerId: providerId,
-        model: (response.cfg && response.cfg.model) || providers.getConfig(providerId).model,
+        model: (response && response.cfg && response.cfg.model) || providers.getConfig(providerId).model,
         systemPrompt: systemPrompt,
-        userText: userText,
-        rawText: response.text,
-        usage: response.usage,
-        latencyMs: response.latencyMs,
-        cost: providers.estimateCost(descriptor, response.usage, systemPrompt + userText),
+        userText: baseUserText,
+        rawText: response ? response.text : '',
+        usage: response ? response.usage : null,
+        latencyMs: response ? response.latencyMs : 0,
+        finishReason: response ? response.finishReason : '',
+        truncated: !!(response && response.truncated),
+        attempts: attempts,
+        retried: retried,
+        cost: providers.estimateCost(descriptor, response ? response.usage : null, systemPrompt + baseUserText),
         validated: validated,
         exports: built
       };
@@ -259,8 +310,16 @@
 
         item.result = trace.validated;
         item.meta = trace;
-        item.error = trace.validated.ok ? null : 'Validation found blocking issues.';
-        touch(item, trace.validated.data ? 'done' : 'error');
+        var hasData = !!trace.validated.data;
+        var blocking = trace.validated.stats.errors;
+        item.error = hasData
+          ? (blocking ? 'Generated, but with ' + blocking +
+            ' blocking validation issue(s) — open the validation list before exporting.' : null)
+          : (trace.truncated
+            ? 'The model answer was cut off before the JSON was complete (token ceiling). Raise "Max tokens" ' +
+              'in the provider panel, then retry.'
+            : 'The provider did not return usable metadata. The raw answer is shown below.');
+        touch(item, !hasData ? 'error' : (blocking ? 'issues' : 'done'));
       } catch (err) {
         item.error = err.message;
         item.controller = null;
@@ -347,6 +406,7 @@
         ready: ['ready', 'Ready'],
         generating: ['generating', 'Generating'],
         done: ['done', 'Done'],
+        issues: ['issues', 'Issues'],
         cancelled: ['cancelled', 'Cancelled'],
         error: ['error', 'Failed']
       };
@@ -484,7 +544,47 @@
 
     function handleResultAction(action, platformId, target) {
       var item = selectedItem();
-      if (!item || !item.result || !item.result.data) return;
+      if (!item) return;
+
+      if (action === 'copy-diagnostics') {
+        var meta = item.meta || {};
+        var usage = meta.usage || {};
+        var result = item.result;
+        var text = [
+          'Microstock Metadata Generator — diagnostics',
+          'file: ' + item.name,
+          'provider: ' + (meta.providerId || '?') + ' · model: ' + (meta.model || '?'),
+          'attempts: ' + (meta.attempts || 1),
+          'latency: ' + (meta.latencyMs || 0) + ' ms',
+          'finish reason: ' + (meta.finishReason || '(none)'),
+          'tokens: ' + (usage.inputTokens || '?') + ' in / ' + (usage.outputTokens || '?') + ' out',
+          'issues:',
+          (result && result.issues && result.issues.length
+            ? result.issues.map(function (i) { return '  [' + i.level + '] ' + i.code + ' — ' + i.message; }).join('\n')
+            : '  (none)'),
+          '',
+          'raw answer:',
+          (meta.rawText || '(none)')
+        ].join('\n');
+        util.copyText(text).then(function () {
+          ui.toast('Diagnostics copied to the clipboard.', 'ok');
+        }, function () { ui.toast('Clipboard blocked by the browser.', 'error'); });
+        return;
+      }
+
+      if (action === 'retry') {
+        item.result = null;
+        item.error = null;
+        touch(item, 'queued');
+        render();
+        generateAll();
+        return;
+      }
+
+      if (action === 'remove') { removeItem(item.id); return; }
+
+      if (!item.result || !item.result.data) return;
+
       var data = item.result.data;
       var built = currentExports(item);
 
@@ -532,16 +632,6 @@
         return;
       }
 
-      if (action === 'retry') {
-        item.result = null;
-        item.error = null;
-        touch(item, 'queued');
-        render();
-        generateAll();
-        return;
-      }
-
-      if (action === 'remove') removeItem(item.id);
       void target;
     }
 

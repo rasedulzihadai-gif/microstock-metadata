@@ -227,7 +227,9 @@
       wireFormat: saved.wireFormat || descriptor.wireFormat,
       extraHeaders: saved.extraHeaders || descriptor.extraHeaders || {},
       temperature: typeof saved.temperature === 'number' ? saved.temperature : 0.2,
-      maxTokens: typeof saved.maxTokens === 'number' ? saved.maxTokens : 2048,
+      // 4096 by default: a four-platform answer (titles + up to 50 keywords each) can
+      // exceed 2048 tokens and would otherwise be cut off mid-JSON.
+      maxTokens: typeof saved.maxTokens === 'number' ? saved.maxTokens : 4096,
       jsonMode: saved.jsonMode !== false
     };
   }
@@ -485,6 +487,7 @@
         outputTokens: util.estimateTokens(text)
       },
       finishReason: 'stop',
+      truncated: false,
       raw: { provider: 'mock', scenario: scenario },
       latencyMs: 42
     });
@@ -544,10 +547,20 @@
         if (!json) throw new Error(descriptor.label + ' returned a non-JSON body: ' + raw.slice(0, 300));
         var parsed = parseResponse(cfg.wireFormat, json);
         var ended = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        var finishReason = parsed.finishReason || '';
+        // "length" (OpenAI/DeepSeek), "max_tokens" (Anthropic), "MAX_TOKENS" (Gemini)
+        var truncated = /length|max_tokens|max_output_tokens|maxoutputtokens/i.test(finishReason);
+        if (!parsed.text || !parsed.text.trim()) {
+          throw new Error(descriptor.label + ' returned an empty answer' +
+            (finishReason ? ' (finish reason: ' + finishReason + ')' : '') +
+            '. If this is a reasoning model, or the answer was cut off, raise "Max tokens" in the ' +
+            'provider panel and retry.');
+        }
         return {
           text: parsed.text,
           usage: parsed.usage,
-          finishReason: parsed.finishReason,
+          finishReason: finishReason,
+          truncated: truncated,
           raw: json,
           latencyMs: Math.round(ended - started),
           request: request,

@@ -57,6 +57,50 @@
     'collection': 'template_pack'
   };
 
+  /**
+   * Salvage a response that was cut off mid-JSON (hit the token ceiling).
+   * Closes an open string, drops dangling separators, then closes every container
+   * that is still open — usually leaving a usable, partially complete object.
+   * Returns the parsed object, or null when nothing sensible can be recovered.
+   */
+  function closeTruncatedJson(text) {
+    var start = text.indexOf('{');
+    if (start === -1) return null;
+    var s = text.slice(start);
+
+    var stack = [];
+    var inString = false, escaped = false;
+    for (var i = 0; i < s.length; i++) {
+      var ch = s[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{' || ch === '[') stack.push(ch);
+      else if (ch === '}' || ch === ']') stack.pop();
+    }
+    if (!stack.length) return null; // balanced: the parse failure has another cause
+
+    var out = s;
+    if (inString) out += '"';
+    // `..."last item",` -> drop the comma; `..."key":` -> drop the dangling pair
+    out = out.replace(/,\s*$/, '');
+    out = out.replace(/,\s*"[^"]*"\s*:\s*$/, '');
+    while (stack.length) {
+      var open = stack.pop();
+      out = out.replace(/,\s*$/, '');
+      out += (open === '{' ? '}' : ']');
+    }
+    try {
+      return JSON.parse(out);
+    } catch (e) {
+      return null;
+    }
+  }
+
   function issue(level, code, field, message, extra) {
     return Object.assign({ level: level, code: code, field: field, message: message }, extra || {});
   }
@@ -98,16 +142,25 @@
         if (depth === 0) { end = i; break; }
       }
     }
-    if (end === -1) return { data: null, error: 'Unbalanced braces in the model response.' };
+    if (end === -1) {
+      // Unbalanced: most likely the answer was cut off by the token ceiling.
+      var salvagedUnbalanced = closeTruncatedJson(text.slice(start));
+      if (salvagedUnbalanced) {
+        return { data: salvagedUnbalanced, repaired: true, truncatedRepair: true };
+      }
+      return { data: null, error: 'Unbalanced braces in the model response.' };
+    }
 
     var candidate = text.slice(start, end + 1);
     try {
       return { data: JSON.parse(candidate), repaired: true };
     } catch (e2) {
-      // Last resort: trailing commas.
+      // Last resort: trailing commas, then salvage a truncated answer.
       try {
         return { data: JSON.parse(candidate.replace(/,\s*([}\]])/g, '$1')), repaired: true };
       } catch (e3) {
+        var salvaged = closeTruncatedJson(text.slice(start));
+        if (salvaged) return { data: salvaged, repaired: true, truncatedRepair: true };
         return { data: null, error: 'Model response is not valid JSON: ' + e3.message };
       }
     }
@@ -199,6 +252,12 @@
     if (parsed.repaired) {
       issues.push(issue('fixed', 'json_extracted_from_prose', '*',
         'Extracted the JSON object from surrounding model prose/fences.'));
+    }
+    if (parsed.truncatedRepair) {
+      issues.push(issue('fixed', 'json_repaired_from_truncation', '*',
+        'The model answer was cut off mid-JSON (token ceiling). Recovered the complete part and ' +
+        'closed the remaining structure — raise "Max tokens" in the provider panel so the full ' +
+        'answer fits.'));
     }
 
     var data = parsed.data;
@@ -491,7 +550,8 @@
       data: data,
       issues: issues,
       stats: stats,
-      repaired: !!parsed.repaired
+      repaired: !!parsed.repaired,
+      truncatedRepair: !!parsed.truncatedRepair
     };
   }
 

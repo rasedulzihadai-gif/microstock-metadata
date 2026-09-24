@@ -20,9 +20,10 @@ var promptsMod = require('../js/prompts.js');
 var validateMod = require('../js/validate.js');
 var exportsMod = require('../js/export.js');
 var detectMod = require('../js/detect.js');
+var appMod = require('../js/app.js');
 var fixtures = require('./png.js');
 
-var MSMG = Object.assign({}, core, providersMod, promptsMod, validateMod, exportsMod, detectMod);
+var MSMG = Object.assign({}, core, providersMod, promptsMod, validateMod, exportsMod, detectMod, appMod);
 
 var util = MSMG.util;
 var providers = MSMG.providers;
@@ -30,6 +31,7 @@ var prompts = MSMG.prompts;
 var validate = MSMG.validate;
 var exportsApi = MSMG.exports;
 var detect = MSMG.detect;
+var app = MSMG.app;
 
 /* ------------------------------------------------------------------ *
  * Harness
@@ -360,6 +362,61 @@ async function suiteProviders() {
     eq(req.headers['Content-Type'], 'application/json');
     eq(req.headers.Authorization, 'Bearer k');
   });
+
+  await test('default max tokens fit a four-platform answer (4096)', function () {
+    eq(providers.getConfig('xkiro').maxTokens, 4096);
+    eq(providers.getConfig('deepseek').maxTokens, 4096);
+  });
+
+  await test('callVision flags a token-ceiling finish reason as truncated', async function () {
+    var realFetch = global.fetch;
+    global.fetch = function () {
+      return Promise.resolve({
+        ok: true, status: 200,
+        text: function () {
+          return Promise.resolve(JSON.stringify({
+            choices: [{ message: { content: '{"content_type": "single_asset"' }, finish_reason: 'length' }],
+            usage: { prompt_tokens: 4000, completion_tokens: 2048 }
+          }));
+        }
+      });
+    };
+    try {
+      providers.saveConfig('deepseek', { apiKey: 'k' });
+      var res = await providers.callVision('deepseek', {
+        systemPrompt: 'S', userText: 'U',
+        imageDataUrl: fixtures.toDataUrl(fixtures.singleBackgroundPng(32, 32))
+      });
+      eq(res.truncated, true, 'truncated flag');
+      eq(res.finishReason, 'length');
+    } finally { global.fetch = realFetch; }
+  });
+
+  await test('an empty model answer produces an actionable error', async function () {
+    var realFetch = global.fetch;
+    global.fetch = function () {
+      return Promise.resolve({
+        ok: true, status: 200,
+        text: function () {
+          return Promise.resolve(JSON.stringify({
+            choices: [{ message: { content: '' }, finish_reason: 'length' }],
+            usage: { prompt_tokens: 4000, completion_tokens: 2048 }
+          }));
+        }
+      });
+    };
+    var threw = null;
+    try {
+      providers.saveConfig('deepseek', { apiKey: 'k' });
+      await providers.callVision('deepseek', {
+        systemPrompt: 'S', userText: 'U',
+        imageDataUrl: fixtures.toDataUrl(fixtures.singleBackgroundPng(32, 32))
+      });
+    } catch (e) { threw = e; } finally { global.fetch = realFetch; }
+    ok(threw, 'expected an error');
+    includes(threw.message, 'empty answer');
+    includes(threw.message, 'Max tokens');
+  });
 }
 
 /* ------------------------------------------------------------------ *
@@ -505,6 +562,26 @@ async function suiteDetection() {
       panelCount: 1, gutterRatio: 0, textBandCount: 0, regularity: 0.05, peakRatio: 1, panelColorSpread: 0
     });
     eq(flatLike.contentType, 'single_asset');
+  });
+
+  await test('seamless dot pattern (the SVG case) is not mistaken for a template pack', function () {
+    var W = 192, H = 144;
+    var g = fixtures.grayFromScene(fixtures.dotPatternScene(W, H), W, H);
+    var verdict = detect.classifySignals(detect.computeSignalsFromGray(g.gray, W, H, g.colorCount));
+    console.log('      edgeDensity=' + verdict.signals.edgeDensity.toFixed(4) +
+      ' panels=' + verdict.signals.panelCount +
+      ' textBands=' + verdict.signals.textBandCount +
+      ' regularity=' + verdict.signals.regularity.toFixed(2) +
+      ' -> \x1b[36m' + verdict.contentType + '\x1b[0m (' + verdict.confidence + ')');
+    eq(verdict.contentType, 'single_asset', 'a flat repeating surface is a single asset, not a pack');
+    ok(verdict.confidence >= 0.55, 'expected at least a mild lean, got ' + verdict.confidence);
+  });
+
+  await test('poster pack still wins over the pattern discount', function () {
+    var W = 192, H = 144;
+    var g = fixtures.grayFromScene(fixtures.templatePackScene(W, H), W, H);
+    var verdict = detect.classifySignals(detect.computeSignalsFromGray(g.gray, W, H, g.colorCount));
+    eq(verdict.contentType, 'template_pack');
   });
 }
 
@@ -694,6 +771,36 @@ async function suiteValidation() {
     var res = validate.validateAndFix(JSON.stringify(payload), {});
     ok(hasIssue(res, 'keyword_count_below_target'));
     eq(res.data.platforms.adobe_stock.keywords.length, 3, 'validator must never invent keywords');
+  });
+
+  await test('truncated JSON is salvaged instead of failing outright', function () {
+    var truncated = '{"content_type":"single_asset","description":"A dot pattern.",' +
+      '"platforms":{"adobe_stock":{"title":"Black polka dot pattern","keywords":["polka dot pattern","dots","grid",';
+    var parsed = validate.extractJson(truncated);
+    ok(parsed.data, 'expected the truncated answer to be salvaged');
+    eq(parsed.truncatedRepair, true);
+    eq(parsed.data.content_type, 'single_asset');
+    ok(Array.isArray(parsed.data.platforms.adobe_stock.keywords), 'keywords array must be closed');
+
+    var res = validate.validateAndFix(truncated, { contentTypeHint: 'single_asset' });
+    ok(hasIssue(res, 'json_repaired_from_truncation'));
+    eq(res.data.platforms.adobe_stock.title, 'Black polka dot pattern');
+  });
+
+  await test('salvage keeps the complete platforms and errors on the missing ones', function () {
+    var truncated = '{"content_type":"template_pack","platforms":{"adobe_stock":{"title":"Poster templates set",' +
+      '"keywords":["poster","template"],"category":"Graphic Resources"},"shutterstock":{"title":"Poster templates set"';
+    var res = validate.validateAndFix(truncated, {});
+    eq(res.ok, false, 'missing platforms must still be reported');
+    ok(hasIssue(res, 'platform_block_missing'));
+    eq(res.data.platforms.adobe_stock.title, 'Poster templates set', 'the complete block survives');
+    eq(res.data.content_type, 'template_pack');
+  });
+
+  await test('a balanced-but-broken answer is not reported as truncated', function () {
+    var parsed = validate.extractJson('{ this is not json at all }');
+    eq(parsed.data, null);
+    eq(!!parsed.truncatedRepair, false);
   });
 }
 
@@ -893,6 +1000,79 @@ async function suitePipeline() {
       includes(run.exports.adobe_stock.csv, '"');
       includes(run.exports.istock_getty.csv, '"Filename","Description","Keywords","Categories"');
     });
+  });
+
+  await test('a cut-off answer is auto-retried with a compact instruction', async function () {
+    var realFetch = global.fetch;
+    var payloads = [];
+    global.fetch = function (url, init) {
+      var body = JSON.parse(init.body);
+      payloads.push(body.messages[1].content[0].text);
+      var truncated = 'Sure! Here is the JSON: {"content_type":"single_asset","description":"Dot pattern.",' +
+        '"platforms":{"adobe_stock":{"title":"Black polka dot pattern on white","keywords":["polka dot pattern","dots",';
+      var answer = payloads.length === 1
+        ? { content: truncated, finish: 'length' }
+        : { content: JSON.stringify(singleAssetPayload()), finish: 'stop' };
+      return Promise.resolve({
+        ok: true, status: 200,
+        text: function () {
+          return Promise.resolve(JSON.stringify({
+            choices: [{ message: { content: answer.content }, finish_reason: answer.finish }],
+            usage: { prompt_tokens: 3950, completion_tokens: 2050 }
+          }));
+        }
+      });
+    };
+    providers.saveConfig('deepseek', { apiKey: 'k', maxTokens: 4096 });
+    var run;
+    try {
+      run = await app.coreGenerate({
+        dataUrl: fixtures.toDataUrl(fixtures.singleBackgroundPng(48, 32)),
+        filename: 'dotland-bangladesh-dot.svg',
+        hint: 'auto', precheck: null, providerId: 'deepseek'
+      });
+    } finally { global.fetch = realFetch; }
+
+    eq(payloads.length, 2, 'expected exactly two attempts');
+    eq(run.attempts, 2);
+    eq(run.retried, true);
+    ok(run.validated.data, 'the retry should produce usable metadata');
+    eq(run.validated.data.content_type, 'single_asset');
+    eq(run.validated.stats.errors, 0);
+    ok(run.validated.issues.some(function (i) { return i.code === 'auto_retry_after_truncation'; }),
+      'the retry should be reported to the user');
+    includes(payloads[1], 'at most 35 keywords');
+    notIncludes(payloads[0], 'at most 35 keywords');
+    console.log('      first attempt truncated -> retried -> ' +
+      run.validated.data.platforms.adobe_stock.keywords.length + ' Adobe keywords, ' +
+      run.validated.stats.errors + ' blocking issues');
+  });
+
+  await test('a valid first answer is never retried (no wasted spend)', async function () {
+    var realFetch = global.fetch;
+    var calls = 0;
+    global.fetch = function () {
+      calls++;
+      return Promise.resolve({
+        ok: true, status: 200,
+        text: function () {
+          return Promise.resolve(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(singleAssetPayload()) }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 3950, completion_tokens: 900 }
+          }));
+        }
+      });
+    };
+    try {
+      providers.saveConfig('deepseek', { apiKey: 'k' });
+      var run = await app.coreGenerate({
+        dataUrl: fixtures.toDataUrl(fixtures.singleBackgroundPng(48, 32)),
+        filename: 'x.png', hint: 'auto', precheck: null, providerId: 'deepseek'
+      });
+      eq(calls, 1, 'only one call expected');
+      eq(run.attempts, 1);
+      eq(run.retried, false);
+    } finally { global.fetch = realFetch; }
   });
 }
 

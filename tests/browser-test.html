@@ -451,6 +451,63 @@
           };
         });
 
+        /* 6 — failure diagnostics (the "generation failed" path) */
+        function probeHost() {
+          var existing = document.getElementById('__probe');
+          if (existing) return existing;
+          var d = document.createElement('div');
+          d.id = '__probe';
+          d.style.display = 'none';
+          d.innerHTML = '<div id="resultsEmpty"></div><div id="resultsBody"></div>';
+          document.body.appendChild(d);
+          return d;
+        }
+
+        check('Failure view shows the reason, the raw answer and a fix hint', function () {
+          probeHost();
+          var raw = 'Sure! I could not analyse this image.';
+          var failing = {
+            id: 'probe-1', name: 'dotland-bangladesh-dot.svg', status: 'error', hint: 'auto',
+            thumbUrl: canvasSingle.toDataURL('image/png'),
+            precheck: { contentType: 'single_asset', confidence: 0.57, evidence: ['globally periodic surface'] },
+            meta: {
+              providerId: 'deepseek', model: 'deepseek-flash', attempts: 2, retried: true,
+              latencyMs: 8562, finishReason: 'length', truncated: true,
+              usage: { inputTokens: 3935, outputTokens: 4096 }, rawText: raw, exports: null
+            },
+            result: MSMG.validate.validateAndFix(raw, { contentTypeHint: 'single_asset' })
+          };
+          MSMG.ui.renderResults(null, { item: failing, exports: null, systemPrompt: 'SYSTEM PROMPT TEXT', rawText: raw });
+          var html = document.getElementById('resultsBody').innerHTML;
+          var needed = ['Why it failed', 'json_parse_failed', 'Raw model answer', 'Copy diagnostics',
+            'Max tokens', 'deepseek-flash', 'length', 'Retry'];
+          var missing = needed.filter(function (c) { return html.indexOf(c) === -1; });
+          return {
+            ok: !missing.length,
+            detail: missing.length ? 'missing: ' + missing.join(', ') :
+              'reason, raw answer, diagnostics, fix hint and retry all rendered'
+          };
+        });
+
+        check('A cut-off-but-salvaged answer renders as a normal result with a warning', function () {
+          probeHost();
+          var truncatedRaw = '{"content_type":"single_asset","description":"Dot pattern.","platforms":{' +
+            '"adobe_stock":{"title":"Black polka dot pattern","keywords":["polka dots","dots","pattern",';
+          var res = MSMG.validate.validateAndFix(truncatedRaw, { contentTypeHint: 'single_asset' });
+          var item = {
+            id: 'probe-2', name: 'dotland-bangladesh-dot.svg', status: 'issues', hint: 'auto',
+            precheck: { contentType: 'single_asset', confidence: 0.57, evidence: [] },
+            meta: { providerId: 'deepseek', model: 'deepseek-flash', attempts: 1, retried: false, latencyMs: 3000, finishReason: 'length', truncated: true, usage: { inputTokens: 3900, outputTokens: 4096 }, rawText: truncatedRaw, exports: { adobe_stock: MSMG.exports.buildCsv('adobe_stock', res.data.platforms.adobe_stock, { filename: 'x.png' }) } },
+            result: res
+          };
+          MSMG.ui.renderResults(null, { item: item, exports: item.meta.exports, systemPrompt: 'S', rawText: truncatedRaw });
+          var html = document.getElementById('resultsBody').innerHTML;
+          var okFlag = html.indexOf('json_repaired_from_truncation') !== -1 &&
+            html.indexOf('Black polka dot pattern') !== -1 &&
+            html.indexOf('Adobe Stock') !== -1; // normal result view, not the failure view
+          return { ok: okFlag, detail: 'recovered title + truncation issue shown inside the normal result view' };
+        });
+
         /* artifacts for inspection */
         artifact('Fixture 1 — single background: titles & keywords',
           'content_type: ' + sData.content_type + '\n' +
