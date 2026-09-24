@@ -1,0 +1,16 @@
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+
+# Generated artefacts
+tests/last-report.json
+_site/
+
+# Node (the app itself has zero dependencies, but keep this for safety)
+node_modules/
+
+# Unrelated third-party archive that happened to live in this folder
+# (a WordPress theme zip — remove this line if you actually want it in the repo)
+woodmart.8.2.7.zip

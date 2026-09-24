@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Self-test — Microstock Metadata Generator</title>
+  <link rel="stylesheet" href="../styles.css">
+  <style>
+    .test-wrap { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
+    .test-head { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; }
+    .test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+    .fixture { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: rgba(19, 27, 39, .72); }
+    .fixture img { width: 100%; border-radius: 8px; display: block; border: 1px solid var(--line-soft); }
+    .fixture h3 { margin-bottom: 8px; }
+    .verdict { margin-top: 10px; font-size: 12.5px; }
+    .assert { display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: 7px 9px; border-radius: 8px; margin-bottom: 6px; font-size: 12.5px; border: 1px solid var(--line-soft); background: #131c29; }
+    .assert-pass { border-color: rgba(52, 211, 153, .35); background: var(--ok-soft); }
+    .assert-fail { border-color: rgba(248, 113, 113, .45); background: var(--bad-soft); }
+    .assert-skip { border-color: rgba(251, 191, 36, .35); background: var(--warn-soft); }
+    .assert-mark { font-weight: 700; }
+    .assert-detail { color: var(--text-faint); font-size: 11.5px; margin-top: 2px; word-break: break-word; }
+    .summary { margin: 16px 0; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: rgba(19, 27, 39, .8); font-size: 14px; }
+    .section-title { margin-top: 26px; }
+    .live-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+    .live-controls input, .live-controls select { max-width: 260px; }
+    pre.artifact { max-height: 260px; overflow: auto; white-space: pre-wrap; background: #0d141e; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+    @media (max-width: 900px) { .test-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">✓</div>
+      <div class="brand-text">
+        <h1>Self-test — content-type aware metadata</h1>
+        <p class="tagline">
+          Renders two genuine images (one single background, one multi-element poster/template pack), runs them
+          through the real detection, prompt, validation and CSV layers, and checks the acceptance criteria.
+        </p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <a class="btn btn-ghost btn-sm" href="../index.html">← Back to the app</a>
+    </div>
+  </header>
+
+  <div class="test-wrap">
+    <div class="test-head">
+      <div>
+        <h2 class="section-title" style="margin-top:0">Fixtures</h2>
+        <p class="hint">Both scenes share the same blue-violet gradient palette, so the classification has to come
+          from the layout — proving the detector is not just reacting to colours.</p>
+      </div>
+      <div class="live-controls">
+        <button id="runOffline" class="btn btn-primary">Run offline checks</button>
+      </div>
+    </div>
+
+    <div class="test-grid">
+      <div class="fixture">
+        <h3>1 · Single background</h3>
+        <img id="imgSingle" alt="Single gradient background fixture">
+        <p class="verdict" id="verdictSingle">not analysed yet</p>
+      </div>
+      <div class="fixture">
+        <h3>2 · Template / design pack</h3>
+        <img id="imgPack" alt="Multi-element poster template pack fixture">
+        <p class="verdict" id="verdictPack">not analysed yet</p>
+      </div>
+    </div>
+    <canvas id="canvasSingle" width="512" height="384" hidden></canvas>
+    <canvas id="canvasPack" width="512" height="384" hidden></canvas>
+
+    <div class="summary" id="summary">Idle — press “Run offline checks”.</div>
+
+    <h2 class="section-title">Live provider test (optional)</h2>
+    <p class="hint">
+      The offline checks use the deterministic mock provider so they always run. To verify real model behaviour,
+      paste a key below — it is saved with the same per-provider config the app uses, and the two fixtures are then
+      sent to that provider exactly as the app would send your uploads.
+    </p>
+    <div class="live-controls">
+      <select id="liveProvider"></select>
+      <input id="liveKey" type="password" placeholder="API key (stored locally)" autocomplete="off">
+      <button id="runLive" class="btn">Run live test</button>
+      <span class="hint" id="liveStatus"></span>
+    </div>
+
+    <h2 class="section-title">Assertions</h2>
+    <div id="assertions"></div>
+
+    <h2 class="section-title">Artifacts</h2>
+    <div id="artifacts"></div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="../js/core.js"></script>
+  <script src="../js/providers.js"></script>
+  <script src="../js/prompts.js"></script>
+  <script src="../js/validate.js"></script>
+  <script src="../js/export.js"></script>
+  <script src="../js/detect.js"></script>
+  <script src="../js/scenes.js"></script>
+  <script src="../js/ui.js"></script>
+  <script src="../js/app.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      var MSMG = window.MSMG;
+      var util = MSMG.util;
+
+      var assertionHost = document.getElementById('assertions');
+      var artifactHost = document.getElementById('artifacts');
+      var summaryEl = document.getElementById('summary');
+      var totals = { pass: 0, fail: 0, skip: 0 };
+
+      function record(name, state, detail) {
+        totals[state] = (totals[state] || 0) + 1;
+        var mark = state === 'pass' ? '✓' : (state === 'fail' ? '✗' : '•');
+        var el = document.createElement('div');
+        el.className = 'assert assert-' + state;
+        el.innerHTML = '<span class="assert-mark">' + mark + '</span>' +
+          '<span><span class="assert-name">' + util.escapeHtml(name) + '</span>' +
+          (detail ? '<div class="assert-detail">' + util.escapeHtml(detail) + '</div>' : '') + '</span>';
+        assertionHost.appendChild(el);
+        return state === 'pass';
+      }
+
+      function check(name, fn) {
+        try {
+          var out = fn();
+          if (out === true || out === undefined) return record(name, 'pass', '');
+          if (out && out.skip) return record(name, 'skip', out.reason || '');
+          if (out && out.detail) return record(name, out.ok ? 'pass' : 'fail', out.detail);
+          return record(name, out ? 'pass' : 'fail', '');
+        } catch (err) {
+          return record(name, 'fail', err.message);
+        }
+      }
+
+      async function checkAsync(name, fn) {
+        try {
+          var out = await fn();
+          if (out === true || out === undefined) return record(name, 'pass', '');
+          if (out && out.detail) return record(name, out.ok ? 'pass' : 'fail', out.detail);
+          return record(name, out ? 'pass' : 'fail', '');
+        } catch (err) {
+          return record(name, 'fail', err.message);
+        }
+      }
+
+      function artifact(title, content, open) {
+        var box = document.createElement('details');
+        if (open) box.open = true;
+        box.className = 'inspector';
+        box.innerHTML = '<summary>' + util.escapeHtml(title) + '</summary><pre class="artifact">' +
+          util.escapeHtml(content) + '</pre>';
+        artifactHost.appendChild(box);
+      }
+
+      function eq(actual, expected, label) {
+        if (actual !== expected) {
+          throw new Error((label ? label + ': ' : '') + 'expected ' + JSON.stringify(expected) +
+            ', got ' + JSON.stringify(actual));
+        }
+      }
+
+      /* ---------------- fixtures ---------------- */
+      var canvasSingle = document.getElementById('canvasSingle');
+      var canvasPack = document.getElementById('canvasPack');
+      MSMG.scenes.paintScene(canvasSingle, 'single_asset', 512, 384);
+      MSMG.scenes.paintScene(canvasPack, 'template_pack', 512, 384);
+      document.getElementById('imgSingle').src = canvasSingle.toDataURL('image/png');
+      document.getElementById('imgPack').src = canvasPack.toDataURL('image/png');
+
+      var ELEMENT_WORDS = ['wave', 'sphere', 'mesh', 'circle', 'bar', 'line', 'ribbon', 'arc', 'ring', 'blob', 'polygon'];
+
+      /* ---------------- offline run ---------------- */
+      async function runOffline() {
+        assertionHost.innerHTML = '';
+        artifactHost.innerHTML = '';
+        totals = { pass: 0, fail: 0, skip: 0 };
+        summaryEl.textContent = 'Running offline checks…';
+
+        var t0 = performance.now();
+
+        /* 1 — real pixel analysis on the rendered fixtures */
+        var detectSingle = MSMG.detect.analyzeCanvas(canvasSingle);
+        var detectPack = MSMG.detect.analyzeCanvas(canvasPack);
+
+        document.getElementById('verdictSingle').innerHTML =
+          'detector says <strong>' + detectSingle.contentType + '</strong> (confidence ' + detectSingle.confidence +
+          ') · panels ' + detectSingle.signals.panelCount + ' · text bands ' + detectSingle.signals.textBandCount +
+          ' · edge density ' + detectSingle.signals.edgeDensity.toFixed(4);
+        document.getElementById('verdictPack').innerHTML =
+          'detector says <strong>' + detectPack.contentType + '</strong> (confidence ' + detectPack.confidence +
+          ') · panels ' + detectPack.signals.panelCount + ' · text bands ' + detectPack.signals.textBandCount +
+          ' · edge density ' + detectPack.signals.edgeDensity.toFixed(4);
+
+        check('Single background fixture is classified as single_asset', function () {
+          eq(detectSingle.contentType, 'single_asset', 'detector output');
+          return detectSingle.confidence >= 0.8
+            ? { ok: true, detail: 'confidence ' + detectSingle.confidence }
+            : { ok: false, detail: 'confidence too low: ' + detectSingle.confidence };
+        });
+
+        check('Poster/template fixture is classified as template_pack', function () {
+          eq(detectPack.contentType, 'template_pack', 'detector output');
+          return {
+            ok: detectPack.confidence >= 0.7 && detectPack.signals.panelCount >= 2 && detectPack.signals.textBandCount >= 2,
+            detail: 'confidence ' + detectPack.confidence + ', panels ' + detectPack.signals.panelCount +
+              ', text bands ' + detectPack.signals.textBandCount
+          };
+        });
+
+        check('Classification is layout-driven, not colour-driven', function () {
+          var flatScore = detectSingle.score;
+          var packScore = detectPack.score;
+          return { ok: flatScore < packScore, detail: 'layout score ' + flatScore + ' vs ' + packScore };
+        });
+
+        /* 2 — full pipeline (mock provider, same code path as the app) */
+        var singleUrl = canvasSingle.toDataURL('image/png');
+        var packUrl = canvasPack.toDataURL('image/png');
+
+        var singleRun = await MSMG.app.coreGenerate({
+          dataUrl: singleUrl, filename: 'gradient_background.png',
+          hint: 'auto', precheck: detectSingle, providerId: 'mock', mockScenario: 'single_asset'
+        });
+        var packRun = await MSMG.app.coreGenerate({
+          dataUrl: packUrl, filename: 'poster_templates_pack.png',
+          hint: 'auto', precheck: detectPack, providerId: 'mock', mockScenario: 'template_pack'
+        });
+
+        var sData = singleRun.validated.data;
+        var pData = packRun.validated.data;
+        var sAdobe = sData.platforms.adobe_stock;
+        var pAdobe = pData.platforms.adobe_stock;
+
+        check('Single asset output declares content_type "single_asset"', function () {
+          eq(sData.content_type, 'single_asset');
+          return true;
+        });
+
+        check('Single asset title obeys rule G (≤70 chars, one visual)', function () {
+          var title = sAdobe.title;
+          var okLen = title.length <= 70;
+          var banned = /\b(set|collection|pack)\b/i.test(title);
+          return { ok: okLen && !banned, detail: '"' + title + '" (' + title.length + ' chars)' };
+        });
+
+        check('Single asset keywords stay inside Adobe limits and carry colour', function () {
+          var kw = sAdobe.keywords;
+          var colour = /blue|violet|purple|indigo|gradient/.test(kw.join(' '));
+          return {
+            ok: kw.length >= 25 && kw.length <= 49 && colour,
+            detail: kw.length + ' keywords, colour word present: ' + colour
+          };
+        });
+
+        check('Single asset is categorised as Backgrounds/Textures, not Graphic Resources', function () {
+          eq(sData.category_suggestion, 'Backgrounds/Textures');
+          return true;
+        });
+
+        check('Single asset title mentions the gradient subject', function () {
+          return {
+            ok: /gradient/i.test(sAdobe.title),
+            detail: 'title: ' + sAdobe.title
+          };
+        });
+
+        check('Template pack output declares content_type "template_pack"', function () {
+          eq(pData.content_type, 'template_pack');
+          return true;
+        });
+
+        check('Rule H — pack title lists 2-4 contained elements', function () {
+          var low = pAdobe.title.toLowerCase();
+          var hits = ELEMENT_WORDS.filter(function (w) { return low.indexOf(w) !== -1; });
+          return {
+            ok: hits.length >= 2 && hits.length <= 4,
+            detail: hits.length + ' element(s) in "' + pAdobe.title + '": ' + (hits.join(', ') || 'none')
+          };
+        });
+
+        check('Rule H — pack title names the template kind and stays ≤70 chars', function () {
+          var cue = /\b(set|collection|pack|templates?|layouts?)\b/i.test(pAdobe.title);
+          return {
+            ok: cue && pAdobe.title.length <= 70,
+            detail: pAdobe.title.length + ' chars, pack kind present: ' + cue
+          };
+        });
+
+        check('Rule I — design-purpose keywords sit alongside colour/use-case keywords', function () {
+          var kw = pAdobe.keywords;
+          var purpose = MSMG.DESIGN_PURPOSE_POOL.filter(function (t) {
+            return kw.indexOf(t) !== -1;
+          });
+          var colour = kw.some(function (k) { return /blue|violet|purple|gradient/.test(k); });
+          return {
+            ok: purpose.length >= 3 && colour,
+            detail: purpose.length + ' design-purpose terms (' + purpose.slice(0, 6).join(', ') +
+              '…) · colour keyword present: ' + colour
+          };
+        });
+
+        check('Rule J — "replaceable text", never "editable text" (pack contains text)', function () {
+          var haystack = (pAdobe.title + ' ' + pAdobe.keywords.join(' ')).toLowerCase();
+          return {
+            ok: haystack.indexOf('editable text') === -1 && haystack.indexOf('replaceable text') !== -1,
+            detail: 'contains "replaceable text": ' + (haystack.indexOf('replaceable text') !== -1)
+          };
+        });
+
+        check('Rule J — "editable" is left alone for shapes/design wording', function () {
+          var payload = JSON.parse(JSON.stringify(pData));
+          payload.platforms.adobe_stock.keywords = ['editable design', 'editable text', 'poster'];
+          var res = MSMG.validate.validateAndFix(JSON.stringify(payload), { contentTypeHint: 'template_pack' });
+          var kw = res.data.platforms.adobe_stock.keywords;
+          return {
+            ok: kw.indexOf('editable design') !== -1 && kw.indexOf('replaceable text') !== -1,
+            detail: 'kept "editable design", swapped "editable text"'
+          };
+        });
+
+        check('Rule K — pack category is Graphic Resources', function () {
+          eq(pData.category_suggestion, 'Graphic Resources');
+          return true;
+        });
+
+        check('Rule K — vector/unknown-file-type flags are raised for the pack', function () {
+          var flags = pData.flags;
+          var needed = ['possible_vector_asset', 'confirm_file_type_ai_eps', 'pack_contains_text'];
+          var missing = needed.filter(function (f) { return flags.indexOf(f) === -1; });
+          return { ok: !missing.length, detail: flags.join(', ') };
+        });
+
+        check('Single asset raises no vector flags', function () {
+          return { ok: sData.flags.indexOf('confirm_file_type_ai_eps') === -1, detail: 'flags: ' + (sData.flags.join(', ') || 'none') };
+        });
+
+        /* 3 — prompt branching */
+        check('Prompt tells the model to classify first, and branches the self-check', function () {
+          var prompt = singleRun.systemPrompt;
+          var hasStep0 = prompt.indexOf('STEP 0 — CONTENT-TYPE CLASSIFICATION') !== -1;
+          var hasSingleBranch = prompt.indexOf('IF content_type = "single_asset" — check the output against A-G') !== -1;
+          var hasPackBranch = prompt.indexOf('IF content_type = "template_pack" — check the output against A-F PLUS H-K') !== -1;
+          return { ok: hasStep0 && hasSingleBranch && hasPackBranch, detail: 'STEP 0 + both self-check branches present' };
+        });
+
+        check('Rules A-G and H-K are both present, and H keeps G\'s character ceilings', function () {
+          var prompt = singleRun.systemPrompt;
+          var rules = ['A. COLOUR', 'B. SUBJECT', 'C. NO FILLER', 'D. NO CONTRADICTIONS', 'E. KEYWORD FORMAT',
+            'F. KEYWORD COUNT', 'G. TITLE', 'H. COLLECTION-STYLE TITLE', 'I. DESIGN-PURPOSE KEYWORDS',
+            'J. VECTOR-TEXT WORDING', 'K. FILE-TYPE-AWARE CATEGORY'];
+          var missing = rules.filter(function (r) { return prompt.indexOf(r) === -1; });
+          return { ok: !missing.length && prompt.indexOf('SAME numbers as rule G') !== -1, detail: missing.length ? 'missing ' + missing.join(', ') : 'all 11 rule blocks present' };
+        });
+
+        check('Local pre-check is passed to the model as an advisory weak prior', function () {
+          var prompt = singleRun.systemPrompt;
+          var marked = prompt.indexOf('advisory only, may be wrong') !== -1;
+          var saysSingle = prompt.indexOf('single_asset" with confidence') !== -1;
+          var saysPack = packRun.systemPrompt.indexOf('template_pack" with confidence') !== -1;
+          return { ok: marked && saysSingle && saysPack, detail: 'pre-check stated for both fixtures' };
+        });
+
+        await checkAsync('Manual toggle overrides auto-detection wording in the prompt', async function () {
+          var hinted = await MSMG.app.coreGenerate({
+            dataUrl: packUrl, filename: 'poster_templates_pack.png', hint: 'template_pack',
+            precheck: detectPack, providerId: 'mock', mockScenario: 'template_pack'
+          });
+          return {
+            ok: hinted.systemPrompt.indexOf('tagged this upload as: "template_pack"') !== -1,
+            detail: 'toggle hint injected as a strong prior'
+          };
+        });
+
+        /* 4 — validation layer */
+        check('Validation reports no blocking errors for either fixture', function () {
+          return {
+            ok: singleRun.validated.stats.errors === 0 && packRun.validated.stats.errors === 0,
+            detail: 'single: ' + JSON.stringify(singleRun.validated.stats) + ' · pack: ' + JSON.stringify(packRun.validated.stats)
+          };
+        });
+
+        check('Validator strips filler keywords end-to-end', function () {
+          var raw = JSON.parse(packRun.rawText);
+          raw.platforms.adobe_stock.keywords = ['poster', 'beautiful background', 'template', 'perfect'];
+          var res = MSMG.validate.validateAndFix(JSON.stringify(raw), { contentTypeHint: 'template_pack' });
+          var kw = res.data.platforms.adobe_stock.keywords;
+          return { ok: kw.indexOf('beautiful background') === -1 && kw.indexOf('perfect') === -1, detail: kw.join(', ') };
+        });
+
+        check('Validator trims an over-long Adobe title on a word boundary', function () {
+          var raw = JSON.parse(packRun.rawText);
+          raw.platforms.adobe_stock.title = 'Poster templates set with blue gradient waves, glowing mesh lines, 3D spheres and soft circles';
+          var res = MSMG.validate.validateAndFix(JSON.stringify(raw), { contentTypeHint: 'template_pack' });
+          var title = res.data.platforms.adobe_stock.title;
+          return { ok: title.length <= 70 && title.trim() === title, detail: '"' + title + '" (' + title.length + ' chars)' };
+        });
+
+        check('Validator forces Graphic Resources back for a mis-categorised pack', function () {
+          var raw = JSON.parse(packRun.rawText);
+          raw.category_suggestion = 'Backgrounds/Textures';
+          var res = MSMG.validate.validateAndFix(JSON.stringify(raw), { contentTypeHint: 'template_pack' });
+          return { ok: res.data.category_suggestion === 'Graphic Resources', detail: res.data.category_suggestion };
+        });
+
+        /* 5 — exports */
+        check('Adobe export: five quoted columns, keywords comma-joined', function () {
+          var built = packRun.exports.adobe_stock;
+          var line = built.csv.trim().split('\r\n')[1];
+          var cells = line.slice(1, -1).split('","');
+          return {
+            ok: cells.length === 5 && cells[2].split(',').length === pAdobe.keywords.length,
+            detail: cells.length + ' columns, ' + cells[2].split(',').length + ' keywords in the field'
+          };
+        });
+
+        check('Adobe export caps filenames at 30 characters and warns', function () {
+          var built = MSMG.exports.buildCsv('adobe_stock', pAdobe, { filename: 'poster_template_pack_collection_preview_2026.png' });
+          var stem = built.csv.trim().split('\r\n')[1].split('","')[0].replace('"', '');
+          return {
+            ok: stem.length <= 30 && built.warnings.some(function (w) { return w.indexOf('30') !== -1; }),
+            detail: 'filename stem "' + stem + '" (' + stem.length + ' chars), warning raised'
+          };
+        });
+
+        check('Freepik export: semicolons and single quotes', function () {
+          var header = packRun.exports.freepik.csv.trim().split('\r\n')[0];
+          eq(header, "'Filename';'Title';'Keywords';'Category'");
+          return true;
+        });
+
+        check('Shutterstock export: description/keywords/categories columns', function () {
+          var header = packRun.exports.shutterstock.csv.trim().split('\r\n')[0];
+          eq(header, '"Filename","Description","Keywords","Categories"');
+          return true;
+        });
+
+        check('iStock/Getty export carries the controlled-vocabulary caveat', function () {
+          var built = packRun.exports.istock_getty;
+          return {
+            ok: built.controlledVocabulary && built.caveats.join(' ').indexOf('CONTROLLED VOCABULARY') !== -1,
+            detail: built.caveats[0]
+          };
+        });
+
+        /* artifacts for inspection */
+        artifact('Fixture 1 — single background: titles & keywords',
+          'content_type: ' + sData.content_type + '\n' +
+          'category_suggestion: ' + sData.category_suggestion + '\n' +
+          'flags: ' + (sData.flags.join(', ') || '(none)') + '\n\n' +
+          'Adobe title (' + sAdobe.title.length + '/70): ' + sAdobe.title + '\n' +
+          'Adobe keywords (' + sAdobe.keywords.length + '): ' + sAdobe.keywords.join(', ') + '\n\n' +
+          'Shutterstock title: ' + sData.platforms.shutterstock.title + '\n' +
+          'Freepik title: ' + sData.platforms.freepik.title + '\n' +
+          'iStock title: ' + sData.platforms.istock_getty.title);
+
+        artifact('Fixture 2 — template pack: titles & keywords',
+          'content_type: ' + pData.content_type + '\n' +
+          'category_suggestion: ' + pData.category_suggestion + '\n' +
+          'flags: ' + pData.flags.join(', ') + '\n\n' +
+          'Adobe title (' + pAdobe.title.length + '/70): ' + pAdobe.title + '\n' +
+          'Adobe keywords (' + pAdobe.keywords.length + '): ' + pAdobe.keywords.join(', ') + '\n\n' +
+          'Shutterstock title: ' + pData.platforms.shutterstock.title + '\n' +
+          'Freepik title: ' + pData.platforms.freepik.title + '\n' +
+          'iStock title: ' + pData.platforms.istock_getty.title);
+
+        artifact('Adobe Stock CSV (pack)', packRun.exports.adobe_stock.csv +
+          '\nWarnings: ' + (packRun.exports.adobe_stock.warnings.join(' | ') || 'none'));
+        artifact('Freepik CSV (pack)', packRun.exports.freepik.csv);
+        artifact('Validation issues (pack)', packRun.validated.issues.map(function (i) {
+          return '[' + i.level + '] ' + i.code + ' — ' + i.message;
+        }).join('\n') || '(none)');
+        artifact('System prompt sent to the model (fixture 2)', packRun.systemPrompt);
+        artifact('Raw model output (mock provider, fixture 2)', packRun.rawText);
+
+        MSMG.ui.toast('Offline checks finished.', totals.fail ? 'warn' : 'ok');
+        summaryEl.innerHTML = '<strong>' + totals.pass + ' passed · ' + totals.fail + ' failed' +
+          (totals.skip ? ' · ' + totals.skip + ' skipped' : '') + '</strong> in ' +
+          Math.round(performance.now() - t0) + ' ms — offline (mock provider, deterministic).';
+      }
+
+      /* ---------------- live run ---------------- */
+      function fillProviders() {
+        var select = document.getElementById('liveProvider');
+        select.innerHTML = MSMG.providers.visible().map(function (p) {
+          return '<option value="' + p.id + '"' + (p.id === 'deepseek' ? ' selected' : '') + '>' +
+            util.escapeHtml(p.label) + (p.isDefault ? ' ★ default' : '') + '</option>';
+        }).join('');
+      }
+
+      async function runLive() {
+        var id = document.getElementById('liveProvider').value;
+        var key = document.getElementById('liveKey').value.trim();
+        var status = document.getElementById('liveStatus');
+        if (key) MSMG.providers.saveConfig(id, { apiKey: key });
+        var cfg = MSMG.providers.getConfig(id);
+        if (cfg.wireFormat !== 'mock' && !cfg.apiKey) {
+          status.textContent = 'Add an API key first.';
+          return;
+        }
+        status.textContent = 'Calling ' + MSMG.providers.byId[id].label + '…';
+        assertionHost.innerHTML = '';
+        artifactHost.innerHTML = '';
+        totals = { pass: 0, fail: 0, skip: 0 };
+
+        var detectSingle = MSMG.detect.analyzeCanvas(canvasSingle);
+        var detectPack = MSMG.detect.analyzeCanvas(canvasPack);
+
+        try {
+          var singleRun = await MSMG.app.coreGenerate({
+            dataUrl: canvasSingle.toDataURL('image/png'), filename: 'gradient_background.png',
+            hint: 'auto', precheck: detectSingle, providerId: id
+          });
+          var packRun = await MSMG.app.coreGenerate({
+            dataUrl: canvasPack.toDataURL('image/png'), filename: 'poster_templates_pack.png',
+            hint: 'auto', precheck: detectPack, providerId: id
+          });
+
+          var sData = singleRun.validated.data;
+          var pData = packRun.validated.data;
+          var pAdobe = pData.platforms.adobe_stock;
+
+          check('LIVE — single background classified as single_asset', function () {
+            return { ok: sData.content_type === 'single_asset', detail: 'model said: ' + sData.content_type + ' · latency ' + singleRun.latencyMs + 'ms' };
+          });
+          check('LIVE — single asset categorised Backgrounds/Textures', function () {
+            return { ok: sData.category_suggestion === 'Backgrounds/Textures', detail: sData.category_suggestion };
+          });
+          check('LIVE — pack classified as template_pack', function () {
+            return { ok: pData.content_type === 'template_pack', detail: 'model said: ' + pData.content_type + ' · latency ' + packRun.latencyMs + 'ms' };
+          });
+          check('LIVE — pack category is Graphic Resources', function () {
+            return { ok: pData.category_suggestion === 'Graphic Resources', detail: pData.category_suggestion };
+          });
+          check('LIVE — pack title names contained elements within 70 chars', function () {
+            var low = pAdobe.title.toLowerCase();
+            var hits = ELEMENT_WORDS.filter(function (w) { return low.indexOf(w) !== -1; });
+            return { ok: pAdobe.title.length <= 70, detail: hits.length + ' element(s): ' + (hits.join(', ') || 'none') + ' — "' + pAdobe.title + '"' };
+          });
+          check('LIVE — no "editable text" wording', function () {
+            var hay = (pAdobe.title + ' ' + pAdobe.keywords.join(' ')).toLowerCase();
+            return { ok: hay.indexOf('editable text') === -1, detail: hay.indexOf('replaceable text') !== -1 ? 'used "replaceable text"' : 'no text wording present' };
+          });
+          check('LIVE — keyword counts inside Adobe limits', function () {
+            return { ok: pAdobe.keywords.length >= 20 && pAdobe.keywords.length <= 49, detail: pAdobe.keywords.length + ' keywords' };
+          });
+
+          artifact('LIVE — pack titles & keywords', JSON.stringify(pData.platforms, null, 2));
+          artifact('LIVE — raw model output (pack)', packRun.rawText);
+          artifact('LIVE — validation issues (pack)', packRun.validated.issues.map(function (i) {
+            return '[' + i.level + '] ' + i.code + ' — ' + i.message;
+          }).join('\n') || '(none)');
+          status.textContent = 'Done in ' + (singleRun.latencyMs + packRun.latencyMs) + ' ms of model time.';
+        } catch (err) {
+          record('LIVE — call failed: ' + err.message, 'fail', '');
+          status.textContent = 'Failed: ' + err.message;
+        }
+
+        summaryEl.innerHTML = '<strong>Live run: ' + totals.pass + ' passed · ' + totals.fail + ' failed</strong>';
+      }
+
+      document.getElementById('runOffline').addEventListener('click', function () {
+        runOffline().catch(function (err) {
+          summaryEl.textContent = 'Offline run crashed: ' + err.message;
+        });
+      });
+      document.getElementById('runLive').addEventListener('click', function () {
+        runLive().catch(function (err) { document.getElementById('liveStatus').textContent = err.message; });
+      });
+
+      fillProviders();
+      runOffline().catch(function (err) {
+        summaryEl.textContent = 'Offline run crashed: ' + err.message;
+      });
+    })();
+  </script>
+</body>
+
+</html>

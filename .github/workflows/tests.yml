@@ -1,0 +1,50 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  offline-suite:
+    name: Offline suite (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Regenerate fixture images
+        run: node tests/make-fixtures.js
+
+      - name: Run test suite
+        run: node tests/run-tests.js
+
+      - name: Upload JSON report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: tests/last-report.json
+          if-no-files-found: ignore
+
+  live-suite:
+    name: Live provider suite (manual runs only)
+    runs-on: ubuntu-latest
+    # Only on manual dispatch — live calls cost money, so they never run on ordinary
+    # pushes. The suite skips itself cleanly when DEEPSEEK_API_KEY is not configured.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run live suite against DeepSeek
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: node tests/run-tests.js --live

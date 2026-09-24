@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Microstock Metadata Generator — type-aware titles, keywords & CSV exports</title>
+  <meta name="description"
+    content="Generate microstock titles, keywords and bulk-upload CSVs for Adobe Stock, Shutterstock, Freepik and iStock/Getty, with separate conventions for single backgrounds and template/design packs.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">MS</div>
+      <div class="brand-text">
+        <h1>Microstock Metadata Generator</h1>
+        <p class="tagline">
+          Type-aware metadata for <strong>single backgrounds</strong> and <strong>template / design packs</strong> —
+          rules A–G for one, A–F + H–K for the other, then validated CSV exports for four marketplaces.
+        </p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <label class="checkbox" title="Send each new image to the provider as soon as it is added">
+        <input type="checkbox" id="autoGenerate">
+        Auto-generate on add
+      </label>
+      <a class="btn btn-ghost btn-sm" href="tests/browser-test.html">Run self-test</a>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="panel panel-input">
+      <h2><span class="step">1</span> Upload</h2>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Add images">
+        <input type="file" id="fileInput" multiple accept="image/*" hidden>
+        <div class="dropzone-icon">⬆</div>
+        <strong>Drop images here</strong>
+        <span>click to browse · or paste from the clipboard</span>
+      </div>
+      <p class="hint">
+        Images are downscaled in your browser before analysis. Only the preview of the selected asset is sent to the
+        AI provider you configure — nothing else leaves this machine.
+      </p>
+
+      <h2><span class="step">2</span> Content type</h2>
+      <div class="segmented" id="contentTypeToggle" role="radiogroup" aria-label="Content type hint">
+        <button type="button" data-value="auto" class="is-active" role="radio" aria-checked="true">Auto-detect</button>
+        <button type="button" data-value="single_asset" role="radio" aria-checked="false">Single background</button>
+        <button type="button" data-value="template_pack" role="radio" aria-checked="false">Template / design pack</button>
+      </div>
+      <p class="hint" id="contentTypeHintText"></p>
+
+      <h2><span class="step">3</span> AI provider</h2>
+      <div class="field">
+        <label for="providerSelect">Provider</label>
+        <select id="providerSelect"></select>
+        <p class="hint" id="providerNotes"></p>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="providerModel">Model</label>
+          <input id="providerModel" list="providerModelList" spellcheck="false">
+          <datalist id="providerModelList"></datalist>
+        </div>
+        <div class="field">
+          <label for="providerKey">API key</label>
+          <input id="providerKey" type="password" autocomplete="off" spellcheck="false" placeholder="paste your API key">
+        </div>
+      </div>
+
+      <details class="advanced">
+        <summary>Advanced provider settings</summary>
+        <div class="field">
+          <label for="providerBaseUrl">Base URL</label>
+          <input id="providerBaseUrl" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="providerWire">Wire format</label>
+          <select id="providerWire"></select>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="providerTemp">Temperature</label>
+            <input id="providerTemp" type="number" min="0" max="1.5" step="0.1">
+          </div>
+          <div class="field">
+            <label for="providerMaxTokens">Max tokens</label>
+            <input id="providerMaxTokens" type="number" min="256" step="256">
+          </div>
+        </div>
+        <div class="field">
+          <label for="providerHeaders">Extra headers (JSON)</label>
+          <textarea id="providerHeaders" rows="2" spellcheck="false"
+            placeholder='{"anthropic-version":"2023-06-01"}'></textarea>
+        </div>
+        <label class="checkbox">
+          <input type="checkbox" id="providerJsonMode">
+          Request JSON mode when the provider supports it
+        </label>
+      </details>
+
+      <div class="btn-row">
+        <button id="saveProvider" class="btn">Save provider</button>
+        <button id="testProvider" class="btn btn-ghost">Test connection</button>
+        <button id="clearKey" class="btn btn-ghost btn-sm" title="Remove the stored key for this provider">Clear key</button>
+      </div>
+      <p class="status" id="providerStatus" aria-live="polite"></p>
+      <p class="hint">
+        Keys are stored only in this browser's <code>localStorage</code>. Each provider keeps its own key, model and
+        endpoint — switching providers never overwrites another provider's slot.
+      </p>
+
+      <h2><span class="step">4</span> Generate</h2>
+      <div class="btn-row">
+        <button id="generateAll" class="btn btn-primary">Generate metadata</button>
+        <button id="cancelAll" class="btn btn-ghost" disabled>Cancel</button>
+      </div>
+      <div class="progress"><div class="progress-bar" id="batchProgress"></div></div>
+      <p class="hint" id="batchStatus">Nothing queued yet.</p>
+    </aside>
+
+    <section class="panel panel-queue">
+      <div class="panel-head">
+        <h2>Queue</h2>
+        <span class="pill" id="queueCount">0 items</span>
+        <button id="clearQueue" class="btn btn-ghost btn-sm">Clear</button>
+      </div>
+      <div class="queue-viewport" id="queueViewport" aria-label="Upload queue"></div>
+    </section>
+
+    <section class="panel panel-results">
+      <div id="resultsEmpty" class="empty"></div>
+      <div id="resultsBody" hidden></div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <p>
+      Rules A–F apply to both content types; single assets add G, template packs keep A–F and add H–K.
+      Validation, character ceilings, keyword caps and CSV quirks are enforced locally after every model call.
+    </p>
+  </footer>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="js/core.js"></script>
+  <script src="js/providers.js"></script>
+  <script src="js/prompts.js"></script>
+  <script src="js/validate.js"></script>
+  <script src="js/export.js"></script>
+  <script src="js/detect.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/app.js"></script>
+  <script src="script.js"></script>
+</body>
+
+</html>
