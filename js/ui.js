@@ -1,6 +1,6 @@
 /*!
- * UI layer: virtualized queue list, results rendering, toasts.
- * Pure DOM, no framework — works from file://.
+ * UI layer: virtualised filmstrip, results workspace, toasts.
+ * Pure DOM, no framework — works from file:// and from a static host.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -16,42 +16,58 @@
   var escapeHtml = util.escapeHtml;
 
   /* ------------------------------------------------------------------ *
-   * Virtual list — keeps the DOM small when hundreds of images are queued.
+   * Virtual list — keeps the DOM tiny with hundreds of assets queued.
+   * Supports a horizontal filmstrip (axis: 'x') and a vertical list ('y').
    * ------------------------------------------------------------------ */
   function createVirtualList(scrollEl, options) {
-    var rowHeight = options.rowHeight || 78;
+    var axis = options.axis === 'x' ? 'x' : 'y';
+    var itemSize = axis === 'x' ? (options.itemWidth || 112) : (options.rowHeight || 76);
     var overscan = options.overscan != null ? options.overscan : 4;
-    var renderRow = options.renderRow;
+    var renderItem = options.renderRow;
     var items = [];
     var spacer = document.createElement('div');
-    spacer.className = 'vlist-spacer';
     var layer = document.createElement('div');
-    layer.className = 'vlist-layer';
+    layer.className = axis === 'x' ? 'strip-track' : 'vlist-layer';
+    if (axis === 'y') spacer.className = 'vlist-spacer';
     scrollEl.innerHTML = '';
     scrollEl.appendChild(spacer);
     scrollEl.appendChild(layer);
     var lastSignature = '';
 
-    function viewportHeight() { return scrollEl.clientHeight || 420; }
+    function viewportSize() {
+      return axis === 'x' ? (scrollEl.clientWidth || 800) : (scrollEl.clientHeight || 420);
+    }
 
     function paint(force) {
-      var scrollTop = scrollEl.scrollTop;
-      var start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
-      var visible = Math.ceil(viewportHeight() / rowHeight) + overscan * 2;
+      var scrollPos = axis === 'x' ? scrollEl.scrollLeft : scrollEl.scrollTop;
+      var start = Math.max(0, Math.floor(scrollPos / itemSize) - overscan);
+      var visible = Math.ceil(viewportSize() / itemSize) + overscan * 2;
       var end = Math.min(items.length, start + visible);
-      var signature = [items.length, start, end, scrollTop].join('|') + '::' +
+      var signature = [items.length, start, end, Math.round(scrollPos)].join('|') + '::' +
         items.slice(start, end).map(function (i) { return i.signature || i.id; }).join(',');
 
       if (!force && signature === lastSignature) return;
       lastSignature = signature;
 
-      spacer.style.height = (items.length * rowHeight) + 'px';
-      layer.style.transform = 'translateY(' + (start * rowHeight) + 'px)';
+      if (axis === 'x') {
+        spacer.style.width = (items.length * itemSize) + 'px';
+        spacer.style.height = '1px';
+        layer.style.transform = 'translateX(' + (start * itemSize) + 'px)';
+      } else {
+        spacer.style.height = (items.length * itemSize) + 'px';
+        layer.style.transform = 'translateY(' + (start * itemSize) + 'px)';
+      }
+
       var frag = document.createDocumentFragment();
       for (var i = start; i < end; i++) {
-        var el = renderRow(items[i], i);
+        var el = renderItem(items[i], i);
         if (!el) continue;
-        el.style.height = (rowHeight - 8) + 'px';
+        if (axis === 'x') {
+          el.style.left = ((i - start) * itemSize) + 'px';
+          el.style.width = (itemSize - 12) + 'px';
+        } else {
+          el.style.height = (itemSize - 8) + 'px';
+        }
         frag.appendChild(el);
       }
       layer.innerHTML = '';
@@ -68,12 +84,17 @@
       refresh: function () { paint(true); },
       scrollIntoView: function (index) {
         if (index < 0 || index >= items.length) return;
-        var top = index * rowHeight;
-        if (top < scrollEl.scrollTop || top + rowHeight > scrollEl.scrollTop + viewportHeight()) {
-          scrollEl.scrollTop = top - viewportHeight() / 2 + rowHeight / 2;
+        var pos = index * itemSize;
+        if (axis === 'x') {
+          if (pos < scrollEl.scrollLeft || pos + itemSize > scrollEl.scrollLeft + viewportSize()) {
+            scrollEl.scrollLeft = pos - viewportSize() / 2 + itemSize / 2;
+          }
+        } else if (pos < scrollEl.scrollTop || pos + itemSize > scrollEl.scrollTop + viewportSize()) {
+          scrollEl.scrollTop = pos - viewportSize() / 2 + itemSize / 2;
         }
       },
-      rowHeight: rowHeight
+      itemSize: itemSize,
+      axis: axis
     };
   }
 
@@ -92,7 +113,7 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * Results rendering
+   * Shared pieces
    * ------------------------------------------------------------------ */
   var FLAG_EXPLANATIONS = {
     possible_vector_asset: 'The pack looks vector-built (AI/EPS/SVG).',
@@ -109,15 +130,20 @@
     return 'Review';
   }
 
-  function renderBadge(label, value, kind) {
+  function badge(label, value, kind) {
     return '<span class="badge' + (kind ? ' badge-' + kind : '') + '">' +
       '<span class="badge-label">' + escapeHtml(label) + '</span>' +
       '<span class="badge-value">' + escapeHtml(value) + '</span></span>';
   }
 
+  function meter(value, max, state) {
+    var pct = max ? util.clamp(Math.round((value / max) * 100), 0, 100) : 0;
+    return '<div class="meter" data-state="' + escapeHtml(state || 'ok') + '"><i style="width:' + pct + '%"></i></div>';
+  }
+
   function renderIssues(issues) {
     if (!issues || !issues.length) {
-      return '<p class="ok-line">✓ No validation issues — every field passed the strict checks.</p>';
+      return '<p class="ok-line">✓ Everything passed the strict checks — no issues raised.</p>';
     }
     var order = { error: 0, fixed: 1, warn: 2 };
     var sorted = issues.slice().sort(function (a, b) {
@@ -126,24 +152,31 @@
     return '<ul class="issue-list">' + sorted.map(function (i) {
       return '<li class="issue issue-' + escapeHtml(i.level) + '">' +
         '<span class="issue-level">' + escapeHtml(levelLabel(i.level)) + '</span>' +
-        '<span class="issue-body"><code>' + escapeHtml(i.code) + '</code> ' + escapeHtml(i.message) + '</span>' +
+        '<span class="issue-body"><code>' + escapeHtml(i.code) + '</code>' + escapeHtml(i.message) + '</span>' +
         '</li>';
     }).join('') + '</ul>';
   }
 
   function renderFlags(flags) {
-    if (!flags || !flags.length) return '<p class="muted">No flags raised.</p>';
+    if (!flags || !flags.length) return '<p class="hint">No flags raised.</p>';
     return '<div class="chips">' + flags.map(function (f) {
-      var why = FLAG_EXPLANATIONS[f];
-      return '<span class="chip chip-flag" title="' + escapeHtml(why || f) + '">' + escapeHtml(f) + '</span>';
+      return '<span class="chip chip-flag" title="' + escapeHtml(FLAG_EXPLANATIONS[f] || f) + '">' +
+        escapeHtml(f) + '</span>';
     }).join('') + '</div>';
   }
 
+  /* ------------------------------------------------------------------ *
+   * Platform panel
+   * ------------------------------------------------------------------ */
   function platformPanel(platform, entry, assetMeta) {
     var keywords = entry.keywords || [];
     var built = assetMeta && assetMeta.exports ? assetMeta.exports[platform.id] : null;
     var target = platform.keywordsTarget;
-    var countClass = keywords.length >= target[0] ? 'good' : (keywords.length >= platform.keywordsMin ? 'warn' : 'bad');
+    var titleLength = (entry.title || '').length;
+    var keywordState = keywords.length >= target[0] ? 'ok'
+      : (keywords.length >= platform.keywordsMin ? 'warn' : 'bad');
+    var titleState = titleLength > platform.titleMax ? 'bad'
+      : (titleLength > platform.titleMax * 0.92 ? 'warn' : 'ok');
     var categoryValue = platform.id === 'shutterstock' && Array.isArray(entry.categories)
       ? entry.categories.join(' · ')
       : (entry.category || assetMeta.categorySuggestion || '');
@@ -160,35 +193,53 @@
 
     var caveats = built && built.caveats.length
       ? '<div class="caveat' + (built.controlledVocabulary ? ' caveat-strong' : '') + '">' +
-        built.caveats.map(function (c) { return '<p>' + escapeHtml(c) + '</p>'; }).join('') + '</div>'
+      built.caveats.map(function (c) { return '<p>' + escapeHtml(c) + '</p>'; }).join('') + '</div>'
       : '';
 
     return '' +
-      '<div class="platform-head">' +
+      '<div class="panel-toolbar">' +
       '<h3>' + escapeHtml(platform.label) + '</h3>' +
-      '<span class="pill pill-' + countClass + '">' + keywords.length + ' keywords ' +
-      '(target ' + target[0] + '-' + target[1] + ', max ' + platform.keywordsMax + ')</span>' +
-      '<span class="pill">title ' + (entry.title || '').length + ' / ' + platform.titleMax + ' chars</span>' +
-      '</div>' +
-      (platform.notes ? '<p class="platform-note">' + escapeHtml(platform.notes) + '</p>' : '') +
-      '<label class="field-label" for="title-' + platform.id + '">Title (editable — re-validates instantly)</label>' +
-      '<input class="title-input" id="title-' + platform.id + '" data-platform="' + platform.id +
-      '" data-field="title" value="' + escapeHtml(entry.title || '') + '">' +
-      '<div class="platform-actions">' +
+      '<span class="pill pill-' + keywordState + '">' + keywords.length + ' keywords</span>' +
+      '<span class="pill' + (titleState === 'bad' ? ' pill-bad' : '') + '">' + titleLength + ' / ' +
+      platform.titleMax + ' chars</span>' +
+      '<span class="spacer"></span>' +
       '<button class="btn btn-sm" data-action="copy-title" data-platform="' + platform.id + '">Copy title</button>' +
       '<button class="btn btn-sm" data-action="copy-keywords" data-platform="' + platform.id + '">Copy keywords</button>' +
       '<button class="btn btn-sm" data-action="copy-csv" data-platform="' + platform.id + '">Copy CSV</button>' +
       '<button class="btn btn-sm btn-primary" data-action="download-csv" data-platform="' + platform.id + '">Download CSV</button>' +
       '</div>' +
-      '<p class="field-label">Keywords — comma separated, edit to re-validate</p>' +
-      '<textarea class="keywords-input" rows="3" data-platform="' + platform.id +
-      '" data-field="keywords">' + escapeHtml(keywords.join(', ')) + '</textarea>' +
+
+      (platform.notes ? '<p class="hint" style="margin-bottom:14px">' + escapeHtml(platform.notes) + '</p>' : '') +
+
+      '<label class="field-label" for="title-' + platform.id + '">Title</label>' +
+      '<input class="title-input" id="title-' + platform.id + '" data-platform="' + platform.id +
+      '" data-field="title" value="' + escapeHtml(entry.title || '') + '" style="margin:6px 0 8px">' +
+      '<div class="row" style="margin-bottom:20px">' +
+      meter(titleLength, platform.titleMax, titleState) +
+      '<span class="hint nowrap">' + titleLength + ' / ' + platform.titleMax + '</span>' +
+      '</div>' +
+
+      '<label class="field-label" for="kw-' + platform.id + '">Keywords — edit to re-validate instantly</label>' +
+      '<textarea class="keywords-input" id="kw-' + platform.id + '" data-platform="' + platform.id +
+      '" data-field="keywords" style="margin:6px 0 8px">' + escapeHtml(keywords.join(', ')) + '</textarea>' +
+      '<div class="row" style="margin-bottom:16px">' +
+      meter(keywords.length, platform.keywordsMax, keywordState) +
+      '<span class="hint nowrap">' + keywords.length + ' / ' + platform.keywordsMax +
+      ' · target ' + target[0] + '–' + target[1] + '</span>' +
+      '</div>' +
+
       '<div class="chips chips-keywords">' + chips + '</div>' +
-      '<p class="muted">Category: <strong>' + escapeHtml(categoryValue || '(none)') + '</strong></p>' +
-      (entry.note ? '<p class="muted">' + escapeHtml(entry.note) + '</p>' : '') +
+
+      '<div class="row" style="margin-top:18px; gap:16px; flex-wrap:wrap">' +
+      '<span class="hint">Category: <strong>' + escapeHtml(categoryValue || '(none)') + '</strong></span>' +
+      (entry.note ? '<span class="hint">' + escapeHtml(entry.note) + '</span>' : '') +
+      '</div>' +
       warnings + caveats;
   }
 
+  /* ------------------------------------------------------------------ *
+   * Failure view — always explain what happened and how to fix it
+   * ------------------------------------------------------------------ */
   function failureView(item, ctx) {
     var meta = item.meta || {};
     var result = item.result;
@@ -197,49 +248,39 @@
     var truncated = meta.truncated || (result && result.truncatedRepair);
 
     var hint = truncated
-      ? '<p class="callout callout-warn"><strong>The answer was cut off by the token limit.</strong> ' +
-      'Open <em>Advanced provider settings</em>, raise <code>Max tokens</code> (4096 or more is a safe default ' +
-      'for four platforms), then press Retry. The truncated answer was also salvaged where possible.</p>'
+      ? '<div class="callout callout-warn"><span aria-hidden="true">⚠︎</span><span>' +
+      '<span class="callout-strong">The answer was cut off by the token limit.</span><br>' +
+      'Open <em>Advanced provider settings</em>, raise <code>Max tokens</code> (4096 or more suits four ' +
+      'platforms), then press Retry. Any complete part of the answer was already salvaged.</span></div>'
       : '';
-
-    var diagnostics = [
-      'file: ' + item.name,
-      'provider: ' + (meta.providerId || '?') + ' · model: ' + (meta.model || '?'),
-      'attempts: ' + (meta.attempts || 1) + (meta.retried ? ' (auto-retried after a bad first answer)' : ''),
-      'latency: ' + (meta.latencyMs || 0) + ' ms',
-      'finish reason: ' + (meta.finishReason || '(none)') + (truncated ? '  <-- truncated by max tokens' : ''),
-      'tokens: ' + (usage.inputTokens || '?') + ' in / ' + (usage.outputTokens || '?') + ' out',
-      'raw answer length: ' + (ctx.rawText ? ctx.rawText.length : 0) + ' chars',
-      '',
-      'issues:',
-      issues.length
-        ? issues.map(function (i) { return '  [' + i.level + '] ' + i.code + ' — ' + i.message; }).join('\n')
-        : '  (none recorded)',
-      '',
-      'raw answer:',
-      ctx.rawText || '(empty)'
-    ].join('\n');
 
     return '' +
       '<header class="result-head">' +
-      '<div class="result-preview">' + (item.thumbUrl
+      '<div class="result-thumb">' + (item.thumbUrl
         ? '<img src="' + escapeHtml(item.thumbUrl) + '" alt="">'
-        : '<div class="thumb-placeholder">no preview</div>') + '</div>' +
-      '<div class="result-meta">' +
+        : '<span class="faint">no preview</span>') + '</div>' +
+      '<div class="result-title">' +
       '<h2>' + escapeHtml(item.name) + '</h2>' +
       '<div class="badges">' +
-      renderBadge('Status', 'generation failed', 'error') +
-      renderBadge('Model', (meta.providerId || '?') + ' · ' + (meta.model || '?')) +
-      renderBadge('Attempts', String(meta.attempts || 1)) +
-      renderBadge('Finish reason', meta.finishReason || 'n/a') +
+      badge('Status', 'generation failed', 'error') +
+      badge('Model', (meta.providerId || '?') + ' · ' + (meta.model || '?')) +
+      badge('Attempts', String(meta.attempts || 1)) +
+      badge('Finish reason', meta.finishReason || 'n/a') +
       '</div>' +
-      '<p class="muted">' + escapeHtml(item.error || 'The provider did not return usable metadata.') + '</p>' +
+      '<p class="result-desc">' + escapeHtml(item.error || 'The provider did not return usable metadata.') + '</p>' +
+      '</div>' +
+      '<div class="head-actions">' +
+      '<button class="btn btn-sm btn-primary" data-action="retry">Retry</button>' +
+      '<button class="btn btn-sm btn-ghost" data-action="remove">Remove</button>' +
       '</div>' +
       '</header>' +
       hint +
-      '<div class="result-grid">' +
-      '<section class="card">' +
+      '<div class="pad">' +
+      '<div class="inspector-grid">' +
+      '<section class="subcard">' +
       '<h3>Why it failed</h3>' + renderIssues(issues) +
+      '</section>' +
+      '<section class="subcard">' +
       '<h3>Diagnostics</h3>' +
       '<ul class="signal-list">' +
       '<li>provider / model: ' + escapeHtml((meta.providerId || '?') + ' · ' + (meta.model || '?')) + '</li>' +
@@ -252,21 +293,24 @@
       '<li>latency: ' + escapeHtml(String(meta.latencyMs || 0)) + ' ms</li>' +
       '<li>raw answer: ' + escapeHtml(String(ctx.rawText ? ctx.rawText.length : 0)) + ' chars</li>' +
       '</ul>' +
-      '<div class="btn-row">' +
-      '<button class="btn btn-primary" data-action="retry">Retry</button>' +
-      '<button class="btn" data-action="copy-diagnostics">Copy diagnostics</button>' +
-      '<button class="btn btn-ghost" data-action="remove">Remove</button>' +
+      '<div class="btn-row" style="margin-top:14px">' +
+      '<button class="btn btn-sm" data-action="copy-diagnostics">Copy diagnostics</button>' +
+      '<button class="btn btn-sm btn-ghost" data-action="retry">Retry</button>' +
       '</div>' +
       '</section>' +
-      '<section class="card card-wide">' +
+      '</div>' +
+      '<section class="subcard" style="margin-top:16px">' +
       '<h3>Raw model answer</h3>' +
-      '<pre class="prompt-pre">' + escapeHtml(ctx.rawText || '(empty response)') + '</pre>' +
+      '<pre class="prompt-pre" style="margin-top:12px">' + escapeHtml(ctx.rawText || '(empty response)') + '</pre>' +
       '<details class="inspector"><summary>Prompt that was sent</summary>' +
       '<pre class="prompt-pre">' + escapeHtml(ctx.systemPrompt || '') + '</pre></details>' +
       '</section>' +
       '</div>';
   }
 
+  /* ------------------------------------------------------------------ *
+   * Results
+   * ------------------------------------------------------------------ */
   function renderResults(host, ctx) {
     var item = ctx.item;
     var body = document.getElementById('resultsBody');
@@ -276,98 +320,128 @@
     if (!item) {
       empty.hidden = false;
       body.hidden = true;
-      empty.innerHTML = '<div class="empty-inner"><div class="empty-icon">◫</div>' +
-        '<h3>No asset selected</h3><p>Add images and generate metadata, then pick an item from the queue ' +
-        'to inspect titles, keywords, validation notes and CSV exports.</p></div>';
+      empty.innerHTML = '<div class="empty-inner">' +
+        '<div class="empty-icon" aria-hidden="true">' +
+        '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" ' +
+        'stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/>' +
+        '<circle cx="8.5" cy="9" r="1.6"/><path d="M21 15.5l-4.5-4.5L7 20.5"/></svg></div>' +
+        '<h3>No asset selected</h3>' +
+        '<p>Add images on the left, or pick one from the library. Each asset gets type-aware titles, keywords, ' +
+        'categories and ready-to-import CSVs for Adobe Stock, Shutterstock, Freepik and iStock/Getty.</p>' +
+        '</div>';
       return;
     }
 
     empty.hidden = true;
     body.hidden = false;
 
-    var meta = item.meta || {};
     var result = item.result;
-    var precheck = item.precheck;
 
-    // Anything without usable metadata goes to the diagnostics view — including a
-    // "successful" call whose answer could not be parsed.
     if (!result || !result.data) {
       body.innerHTML = failureView(item, ctx);
       return;
     }
 
+    var meta = item.meta || {};
+    var precheck = item.precheck;
     var data = result.data;
     var contentType = MSMG.CONTENT_TYPES[data.content_type] || MSMG.CONTENT_TYPES.single_asset;
     var autoDetected = item.hint === 'auto';
     var issues = result.issues || [];
     var counts = result.stats || { errors: 0, fixed: 0, warnings: 0 };
+    var adobe = data.platforms.adobe_stock || { keywords: [] };
 
     var tabs = MSMG.PLATFORMS.map(function (p, idx) {
-      return '<button class="tab' + (idx === 0 ? ' is-active' : '') + '" data-tab="' + p.id + '">' +
-        escapeHtml(p.short) + '</button>';
+      return '<button class="tab' + (idx === 0 ? ' is-active' : '') + '" role="tab" data-tab="' + p.id +
+        '" aria-selected="' + (idx === 0) + '">' + escapeHtml(p.short) + '</button>';
     }).join('');
 
     var panels = MSMG.PLATFORMS.map(function (p, idx) {
       var entry = data.platforms[p.id] || { title: '', keywords: [], category: '' };
-      return '<div class="tab-panel' + (idx === 0 ? ' is-active' : '') + '" data-panel="' + p.id + '">' +
+      return '<div class="tab-panel' + (idx === 0 ? ' is-active' : '') + '" role="tabpanel" data-panel="' + p.id + '">' +
         platformPanel(p, entry, {
           exports: ctx.exports, categorySuggestion: data.category_suggestion
         }) + '</div>';
     }).join('');
 
-    var signalLines = precheck ? precheck.evidence.map(function (e) {
+    var signalLines = precheck && precheck.evidence ? precheck.evidence.map(function (e) {
       return '<li>' + escapeHtml(e) + '</li>';
-    }).join('') : '';
+    }).join('') : '<li>No pre-check evidence recorded.</li>';
+
+    var validationPill = counts.errors
+      ? '<span class="pill pill-bad">' + counts.errors + ' blocking</span>'
+      : '<span class="pill pill-good">Clean</span>';
 
     body.innerHTML = '' +
       '<header class="result-head">' +
-      '<div class="result-preview"><img src="' + escapeHtml(item.thumbUrl || item.dataUrl) + '" alt=""></div>' +
-      '<div class="result-meta">' +
+      '<div class="result-thumb"><img src="' + escapeHtml(item.thumbUrl || item.dataUrl) + '" alt=""></div>' +
+      '<div class="result-title">' +
       '<h2>' + escapeHtml(item.name) + '</h2>' +
       '<div class="badges">' +
-      renderBadge('Content type', contentType.label, data.content_type === 'template_pack' ? 'pack' : 'single') +
-      renderBadge(autoDetected ? 'Detection' : 'Toggle', autoDetected
-        ? 'auto (pre-check ' + (precheck ? Math.round(precheck.confidence * 100) + '%' : 'n/a') + ')'
-        : 'manual override') +
-      renderBadge('Model', (meta.providerId || '?') + ' · ' + (meta.model || '?')) +
-      renderBadge('Latency', (meta.latencyMs || 0) + ' ms') +
-      (meta.cost ? renderBadge('Est. cost', util.formatCost(meta.cost)) : '') +
-      renderBadge('Rule set', contentType.ruleSet) +
+      badge('Content type', contentType.label, data.content_type === 'template_pack' ? 'pack' : 'single') +
+      badge(autoDetected ? 'Detected' : 'Toggle', autoDetected
+        ? (precheck ? Math.round(precheck.confidence * 100) + '%' : 'n/a') : 'manual') +
+      badge('Rule set', contentType.ruleSet) +
       '</div>' +
-      '<p class="muted">' + escapeHtml(data.description || '') + '</p>' +
+      (data.description ? '<p class="result-desc">' + escapeHtml(data.description) + '</p>' : '') +
+      '</div>' +
+      '<div class="head-actions">' +
+      '<button class="btn btn-sm btn-primary" data-action="download-all">Download all CSVs</button>' +
+      '<button class="btn btn-sm" data-action="copy-all">Copy all</button>' +
+      '<button class="btn btn-sm btn-ghost" data-action="retry" title="Re-generate with the current settings">Regenerate</button>' +
+      '<button class="btn btn-sm btn-ghost" data-action="remove">Remove</button>' +
       '</div>' +
       '</header>' +
 
-      '<div class="result-grid">' +
-      '<section class="card">' +
-      '<h3>Category suggestion</h3>' +
-      '<p class="category-suggestion">' + escapeHtml(data.category_suggestion || '—') + '</p>' +
-      '<h3>Flags</h3>' + renderFlags(data.flags) +
-      '<h3>Validation <span class="muted">(' + counts.errors + ' blocking · ' + counts.fixed +
-      ' auto-fixed · ' + counts.warnings + ' review)</span></h3>' +
-      renderIssues(issues) +
-      (precheck ? '<h3>Local pre-check signals</h3><p class="muted">' +
-        escapeHtml(precheck.contentType) + ' (' + Math.round(precheck.confidence * 100) + '%)' +
-        '</p><ul class="signal-list">' + signalLines + '</ul>' : '') +
-      '</section>' +
-
-      '<section class="card card-wide">' +
-      '<div class="tabs">' + tabs + '</div>' +
-      panels +
-      '<div class="btn-row">' +
-      '<button class="btn btn-primary" data-action="download-all">Download all CSVs</button>' +
-      '<button class="btn" data-action="copy-all">Copy all metadata</button>' +
-      '<button class="btn btn-ghost" data-action="retry">Re-generate</button>' +
-      '<button class="btn btn-ghost" data-action="remove">Remove</button>' +
+      '<div class="stat-grid">' +
+      '<div class="stat"><span class="k">Category</span><span class="v">' +
+      escapeHtml(data.category_suggestion || '—') + '</span></div>' +
+      '<div class="stat"><span class="k">Model</span><span class="v mono">' +
+      escapeHtml((meta.providerId || '?') + ' · ' + (meta.model || '?')) + '</span></div>' +
+      '<div class="stat"><span class="k">Latency</span><span class="v">' + escapeHtml(String(meta.latencyMs || 0)) +
+      ' ms</span></div>' +
+      '<div class="stat"><span class="k">Tokens</span><span class="v mono">' +
+      escapeHtml(String((meta.usage && meta.usage.inputTokens) || '?')) + ' in / ' +
+      escapeHtml(String((meta.usage && meta.usage.outputTokens) || '?')) + ' out</span></div>' +
+      '<div class="stat"><span class="k">Adobe keywords</span><span class="v">' +
+      escapeHtml(String((adobe.keywords || []).length)) + ' / 49</span></div>' +
+      '<div class="stat"><span class="k">Validation</span><span class="v">' + validationPill + '</span></div>' +
       '</div>' +
-      '<details class="inspector"><summary>Prompt sent to the model</summary>' +
-      '<p class="muted">Content-type hint: <strong>' + escapeHtml(item.hint || 'auto') +
+
+      '<div class="pad">' +
+      '<div class="panel-toolbar" style="margin-bottom:18px">' +
+      '<div class="tabs" role="tablist" aria-label="Marketplace">' + tabs + '</div>' +
+      '<span class="spacer"></span>' +
+      (meta.cost ? '<span class="pill">est. ' + escapeHtml(util.formatCost(meta.cost)) + '</span>' : '') +
+      (meta.retried ? '<span class="pill pill-warn" title="The first answer was cut off or invalid">auto-retried</span>' : '') +
+      '</div>' +
+
+      panels +
+
+      '<div class="inspector-grid" style="margin-top:24px">' +
+      '<section class="subcard">' +
+      '<h3>Validation <span class="faint" style="font-weight:400">· ' + counts.errors + ' blocking · ' +
+      counts.fixed + ' auto-fixed · ' + counts.warnings + ' review</span></h3>' +
+      renderIssues(issues) +
+      '</section>' +
+      '<section class="subcard">' +
+      '<h3>Flags &amp; pre-check</h3>' +
+      renderFlags(data.flags) +
+      (precheck ? '<p class="hint" style="margin-top:12px">Local layout pre-check suggested <strong>' +
+        escapeHtml(precheck.contentType) + '</strong> (' + Math.round(precheck.confidence * 100) +
+        '% confidence) — a hint to the model, never the decision.</p>' +
+        '<ul class="signal-list" style="margin-top:8px">' + signalLines + '</ul>' : '') +
+      '</section>' +
+      '</div>' +
+
+      '<details class="inspector"><summary>Prompt that was sent</summary>' +
+      '<p class="hint">Content-type hint: <strong>' + escapeHtml(item.hint || 'auto') +
       '</strong> · pre-check passed as advisory: <strong>' +
       escapeHtml(precheck ? precheck.contentType : 'none') + '</strong></p>' +
       '<pre class="prompt-pre">' + escapeHtml(ctx.systemPrompt || '') + '</pre></details>' +
-      '<details class="inspector"><summary>Raw model output</summary>' +
+
+      '<details class="inspector"><summary>Raw model answer</summary>' +
       '<pre class="prompt-pre">' + escapeHtml(ctx.rawText || '(none)') + '</pre></details>' +
-      '</section>' +
       '</div>';
   }
 

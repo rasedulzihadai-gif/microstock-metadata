@@ -399,80 +399,68 @@
     /* ------------------------------------------------------------------ *
      * Rendering
      * ------------------------------------------------------------------ */
-    function statusBadge(item) {
-      var map = {
-        queued: ['queued', 'Queued'],
-        analyzing: ['analyzing', 'Analysing'],
-        ready: ['ready', 'Ready'],
-        generating: ['generating', 'Generating'],
-        done: ['done', 'Done'],
-        issues: ['issues', 'Issues'],
-        cancelled: ['cancelled', 'Cancelled'],
-        error: ['error', 'Failed']
-      };
-      var entry = map[item.status] || ['queued', item.status];
-      return '<span class="status status-' + entry[0] + '">' + util.escapeHtml(entry[1]) + '</span>';
+    var STATUS_LABELS = {
+      queued: 'Queued',
+      analyzing: 'Analysing',
+      ready: 'Ready',
+      generating: 'Generating',
+      done: 'Done',
+      issues: 'Review needed',
+      cancelled: 'Cancelled',
+      error: 'Failed'
+    };
+
+    function statusLabel(item) {
+      return STATUS_LABELS[item.status] || item.status;
     }
 
     function queueRow(item) {
       var el = document.createElement('div');
-      el.className = 'queue-row' + (state.selectedId === item.id ? ' is-selected' : '');
-      el.setAttribute('role', 'button');
+      el.className = 'strip-item' + (state.selectedId === item.id ? ' is-selected' : '');
+      el.setAttribute('role', 'listitem');
+      el.setAttribute('aria-selected', String(state.selectedId === item.id));
       el.tabIndex = 0;
       el.dataset.id = item.id;
 
-      var typeBadge = '';
+      var typeLabel = '';
       if (item.result && item.result.data) {
         var ct = MSMG.CONTENT_TYPES[item.result.data.content_type];
-        typeBadge = '<span class="mini-badge mini-' + item.result.data.content_type + '">' +
-          util.escapeHtml(ct ? ct.shortLabel : item.result.data.content_type) + '</span>';
+        typeLabel = ct ? ct.shortLabel : item.result.data.content_type;
       } else if (item.precheck) {
-        typeBadge = '<span class="mini-badge mini-hint" title="local pre-check">' +
-          util.escapeHtml(item.precheck.contentType === 'template_pack' ? 'Pack?' : 'Single?') + '</span>';
+        typeLabel = item.precheck.contentType === 'template_pack' ? 'pack?' : 'single?';
       }
 
       var kw = item.result && item.result.data && item.result.data.platforms.adobe_stock
         ? (item.result.data.platforms.adobe_stock.keywords || []).length + ' kw'
-        : (item.status === 'generating' ? '…' : '');
+        : (item.status === 'generating' ? 'generating…' : '');
 
-      var issueInfo = '';
-      if (item.result && item.result.stats) {
-        var s = item.result.stats;
-        issueInfo = '<span class="mini-stat' + (s.errors ? ' is-bad' : '') + '">' + s.errors + ' blk</span>' +
-          '<span class="mini-stat' + (s.fixed ? ' is-fixed' : '') + '">' + s.fixed + ' fix</span>' +
-          '<span class="mini-stat' + (s.warnings ? ' is-warn' : '') + '">' + s.warnings + ' rev</span>';
-      }
+      var meta = [statusLabel(item), typeLabel, kw].filter(Boolean).join(' · ');
+      var dotState = item.status === 'done' && item.result && item.result.stats && item.result.stats.errors
+        ? 'issues' : item.status;
 
       el.innerHTML =
-        '<div class="queue-thumb">' + (item.thumbUrl
+        '<div class="strip-thumb">' + (item.thumbUrl
           ? '<img src="' + util.escapeHtml(item.thumbUrl) + '" alt="">'
-          : '<span class="thumb-placeholder">…</span>') + '</div>' +
-        '<div class="queue-info">' +
-        '<p class="queue-name" title="' + util.escapeHtml(item.name) + '">' + util.escapeHtml(item.name) + '</p>' +
-        '<p class="queue-sub">' + statusBadge(item) + typeBadge +
-        '<span class="mini-stat">' + util.escapeHtml(kw) + '</span>' + issueInfo + '</p>' +
+          : '<span class="placeholder" aria-hidden="true">◫</span>') +
+        '<span class="strip-flag ' + util.escapeHtml(dotState) + '" aria-hidden="true"></span>' +
         '</div>' +
-        '<div class="queue-actions">' +
-        '<button class="icon-btn" data-row-action="retry" title="Re-generate">⟳</button>' +
-        '<button class="icon-btn" data-row-action="remove" title="Remove">✕</button>' +
-        '</div>';
+        '<span class="strip-name" title="' + util.escapeHtml(item.name + ' — ' + meta) + '">' +
+        util.escapeHtml(item.name) + '</span>';
+
+      var actions = document.createElement('div');
+      actions.className = 'strip-actions';
+      actions.innerHTML = '<button class="icon-btn" data-row-action="remove" title="Remove" ' +
+        'aria-label="Remove ' + util.escapeHtml(item.name) + '">✕</button>';
+      el.appendChild(actions);
 
       el.addEventListener('click', function (ev) {
         var action = ev.target && ev.target.dataset ? ev.target.dataset.rowAction : null;
         if (action === 'remove') { ev.stopPropagation(); removeItem(item.id); return; }
-        if (action === 'retry') {
-          ev.stopPropagation();
-          item.result = null;
-          item.error = null;
-          touch(item, 'queued');
-          render();
-          generateAll();
-          return;
-        }
         selectItem(item.id);
       });
       el.addEventListener('keydown', function (ev) {
         if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectItem(item.id); }
+        if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); removeItem(item.id); }
       });
       return el;
     }
@@ -488,6 +476,7 @@
         count.textContent = state.items.length + (state.items.length === 1 ? ' item' : ' items');
       }
       var doneCount = state.items.filter(function (i) { return i.status === 'done'; }).length;
+      var failedCount = state.items.filter(function (i) { return i.status === 'error'; }).length;
       var totalCost = state.items.reduce(function (a, i) {
         return a + (i.meta && i.meta.cost ? i.meta.cost : 0);
       }, 0);
@@ -495,11 +484,41 @@
       if (batchStatus) {
         batchStatus.textContent = state.items.length
           ? doneCount + ' of ' + state.items.length + ' generated' +
+            (failedCount ? ' · ' + failedCount + ' failed' : '') +
             (totalCost ? ' · est. spend ' + util.formatCost(totalCost) : '')
           : 'Nothing queued yet.';
       }
+
+      if (state.processing) {
+        setGlobalStatus('busy', 'Generating…');
+      } else if (failedCount) {
+        setGlobalStatus('bad', failedCount + ' failed');
+      } else if (doneCount) {
+        setGlobalStatus('ok', doneCount + ' generated');
+      } else if (state.items.length) {
+        setGlobalStatus('idle', 'Ready to generate');
+      } else {
+        setGlobalStatus('idle', 'Idle');
+      }
+
       renderResults();
       renderControls();
+    }
+
+    function setGlobalStatus(stateName, text) {
+      var el = document.getElementById('globalStatus');
+      if (!el) return;
+      el.dataset.state = stateName;
+      var label = document.getElementById('globalStatusText');
+      if (label) label.textContent = text;
+    }
+
+    function setProviderStatus(stateName, text) {
+      var el = document.getElementById('providerStatus');
+      if (!el) return;
+      el.dataset.state = stateName;
+      var label = el.querySelector('span');
+      if (label) label.textContent = text;
     }
 
     function renderControls() {
@@ -667,6 +686,35 @@
     }
 
     /* ------------------------------------------------------------------ *
+     * Theme
+     * ------------------------------------------------------------------ */
+    var THEME_KEY = 'theme';
+
+    function applyTheme(theme) {
+      if (theme === 'light' || theme === 'dark') {
+        document.documentElement.dataset.theme = theme;
+      } else {
+        delete document.documentElement.dataset.theme;
+      }
+    }
+
+    function initTheme() {
+      var stored = MSMG.store.get(THEME_KEY, '');
+      var prefersLight = typeof matchMedia === 'function' &&
+        matchMedia('(prefers-color-scheme: light)').matches;
+      applyTheme(stored || (prefersLight ? 'light' : 'dark'));
+
+      var btn = document.getElementById('themeToggle');
+      if (btn) {
+        btn.addEventListener('click', function () {
+          var next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+          applyTheme(next);
+          MSMG.store.set(THEME_KEY, next);
+        });
+      }
+    }
+
+    /* ------------------------------------------------------------------ *
      * Provider panel
      * ------------------------------------------------------------------ */
     function fillProviderSelect() {
@@ -769,14 +817,14 @@
       }
 
       if (status) status.textContent = 'Testing…';
+      setProviderStatus('busy', 'Testing…');
       try {
         var res = await providers.testConnection(id);
-        if (status) {
-          status.textContent = '✓ ' + providers.byId[id].label + ' responded in ' + res.latencyMs +
-            ' ms: ' + (res.text || 'ok');
-        }
+        setProviderStatus('ok', 'Connected · ' + res.latencyMs + ' ms');
+        ui.toast(providers.byId[id].label + ' responded in ' + res.latencyMs + ' ms: ' + (res.text || 'ok'), 'ok');
       } catch (err) {
-        if (status) status.textContent = '✕ ' + err.message;
+        setProviderStatus('bad', 'Failed');
+        ui.toast(err.message, 'error');
       }
     }
 
@@ -811,11 +859,13 @@
       var viewport = document.getElementById('queueViewport');
       if (viewport) {
         state.virtualList = ui.createVirtualList(viewport, {
-          rowHeight: 78,
+          axis: 'x',
+          itemWidth: 116,
           renderRow: function (item) { return queueRow(item); }
         });
       }
 
+      initTheme();
       var dropzone = document.getElementById('dropzone');
       var fileInput = document.getElementById('fileInput');
       if (dropzone && fileInput) {
@@ -878,7 +928,7 @@
         providerSelect.addEventListener('change', function () {
           providers.setActiveProviderId(providerSelect.value);
           loadProviderFields(providerSelect.value);
-          document.getElementById('providerStatus').textContent = '';
+          setProviderStatus('idle', 'Not tested');
         });
       }
       var saveBtn = document.getElementById('saveProvider');
@@ -914,7 +964,30 @@
 
       fillProviderSelect();
       setHint(state.hint);
+      initGlobalShortcuts();
       render();
+    }
+
+    /** Keyboard: generate, cancel, delete — the shortcuts a heavy user expects. */
+    function initGlobalShortcuts() {
+      document.addEventListener('keydown', function (ev) {
+        var tag = (ev.target && ev.target.tagName) || '';
+        var typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ev.target.isContentEditable;
+
+        if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
+          ev.preventDefault();
+          generateAll();
+          return;
+        }
+        if (ev.key === 'Escape' && state.processing) {
+          cancelAll();
+          return;
+        }
+        if (!typing && (ev.key === 'Delete') && state.selectedId) {
+          ev.preventDefault();
+          removeItem(state.selectedId);
+        }
+      });
     }
 
     return {

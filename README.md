@@ -139,21 +139,33 @@ record. A combined export block is also available.
 2. Drop images on the upload panel (or paste from the clipboard). Each image is downscaled locally and
    pre-checked for layout structure.
 3. Pick the content type: leave **Auto-detect**, or force **Single background** / **Template / design pack**.
-4. Choose a provider, paste an API key, **Save provider** (and optionally **Test connection**).
-5. **Generate metadata** — one vision call per asset, sequential for predictable cost. Cancel is always
-   available; batches show progress, per-asset keyword counts and issue counters.
-6. Review the results panel: content type + detection, category suggestion, flags, validation notes, the four
-   platform tabs (editable, re-validated on edit), copy/download buttons, plus the exact prompt and raw model
-   output for auditing.
+4. Choose a provider, paste an API key, **Save provider** (and optionally **Test connection**). Each provider
+   keeps its own key, base URL, wire format, temperature and max-token budget. The panel itself only ever
+   says *Not tested* / *DeepSeek responded in 789 ms: ok* — never your key.
+5. **Generate metadata** — one vision call per asset. The batch runs sequentially so cost stays predictable,
+   **Cancel** is always available, and the header dot plus the progress bar summarise the whole run.
+6. Review the result: content type and detection confidence, the rule set that was applied, description,
+   category, token/latency stats, then one tab per marketplace with an editable title and keyword field that
+   re-validates as you type. Validation notes, flags, the pre-check reasoning, the exact prompt and the raw
+   model output all stay on the page for auditing.
 
-The queue is virtualised, so hundreds of images stay smooth.
+**Layout.** A setup rail on the left (upload → content type → provider → generate) and a workspace on the
+right: the *Library* filmstrip holds every asset with a per-asset status dot, click one to review its metadata.
+Below 1180px the rail stacks above the workspace; the topbar is sticky on every width.
+
+**Keyboard and appearance.** `Ctrl`/`Cmd` + `Enter` generates, `Esc` cancels a running batch, `Delete`
+removes the selected asset, and the ◐ button in the topbar switches light/dark (the OS preference is honoured
+on first load). Every interactive element is reachable by keyboard and the filmstrip items are a real ARIA
+listbox-style selection.
+
+The library is virtualised, so hundreds of images stay smooth.
 
 ---
 
 ## 8. Testing
 
 ```bash
-node tests/run-tests.js            # offline suite (64 assertions)
+node tests/run-tests.js            # offline suite (74 assertions)
 node tests/run-tests.js --live     # also calls a real provider when a key is in the env
 node tests/make-fixtures.js        # regenerate tests/fixtures/*.png
 ```
@@ -168,7 +180,7 @@ two fixture images to the real model, asserting classification, rule compliance 
 
 **Browser self-test:** open `tests/browser-test.html`. It paints the two fixtures on canvases, runs the real
 detector, then pushes them through the production pipeline (mock provider) and checks the acceptance criteria
-in-page — 30 assertions. The same page has an optional live section where you can paste a key to run both
+in-page — 32 assertions. The same page has an optional live section where you can paste a key to run both
 fixtures against a real provider.
 
 Fixtures (shared by both suites, defined once in `js/scenes.js`):
@@ -182,8 +194,8 @@ Fixtures (shared by both suites, defined once in `js/scenes.js`):
 ## 9. File map
 
 ```
-index.html              app shell
-styles.css              theme
+index.html              app shell (topbar + setup rail + workspace)
+styles.css              design system: tokens, components, light/dark, responsive
 script.js               bootstrap (starts the app)
 js/core.js              namespace, platform contracts, limits, utilities, storage
 js/providers.js         provider registry + wire-format adapters + connection probe
@@ -192,8 +204,8 @@ js/validate.js          strict output validation + auto-fixes + linters
 js/export.js            four CSV specs, escaping, filename rules, downloads
 js/detect.js            layout-based content-type pre-check (pure + browser wrappers)
 js/scenes.js            the two fixture artworks (shared by app tests)
-js/ui.js                virtualised queue list, results rendering, toasts
-js/app.js               pipeline, queue orchestration, panels
+js/ui.js                virtualised filmstrip, result workspace, failure diagnostics, toasts
+js/app.js               pipeline, queue orchestration, shortcuts, theming
 tests/run-tests.js      Node suite (offline + optional live)
 tests/browser-test.html in-browser self-test page
 tests/png.js            PNG encoder + grayscale helpers

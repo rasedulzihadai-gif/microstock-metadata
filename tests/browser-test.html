@@ -9,39 +9,52 @@
   <style>
     .test-wrap { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
     .test-head { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; }
-    .test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
-    .fixture { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: rgba(19, 27, 39, .72); }
-    .fixture img { width: 100%; border-radius: 8px; display: block; border: 1px solid var(--line-soft); }
-    .fixture h3 { margin-bottom: 8px; }
-    .verdict { margin-top: 10px; font-size: 12.5px; }
-    .assert { display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: 7px 9px; border-radius: 8px; margin-bottom: 6px; font-size: 12.5px; border: 1px solid var(--line-soft); background: #131c29; }
-    .assert-pass { border-color: rgba(52, 211, 153, .35); background: var(--ok-soft); }
-    .assert-fail { border-color: rgba(248, 113, 113, .45); background: var(--bad-soft); }
-    .assert-skip { border-color: rgba(251, 191, 36, .35); background: var(--warn-soft); }
+    .test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+    .fixture { border: 1px solid var(--hairline); border-radius: var(--r-lg); padding: 14px; background: var(--surface); }
+    .fixture img { width: 100%; border-radius: var(--r-md); display: block; border: 1px solid var(--hairline); }
+    .fixture h3 { margin-bottom: 10px; font-size: var(--fs-heading); }
+    .verdict { margin-top: 10px; font-size: var(--fs-xs); color: var(--text-2); line-height: 1.5; }
+    .assert {
+      display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: 9px 12px; border-radius: var(--r-md);
+      margin-bottom: 6px; font-size: var(--fs-sm); border: 1px solid var(--hairline);
+      background: var(--surface); color: var(--text-2);
+    }
+    .assert-pass { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: var(--ok-soft); }
+    .assert-fail { border-color: color-mix(in srgb, var(--bad) 45%, transparent); background: var(--bad-soft); }
+    .assert-skip { border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: var(--warn-soft); }
     .assert-mark { font-weight: 700; }
-    .assert-detail { color: var(--text-faint); font-size: 11.5px; margin-top: 2px; word-break: break-word; }
-    .summary { margin: 16px 0; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: rgba(19, 27, 39, .8); font-size: 14px; }
-    .section-title { margin-top: 26px; }
-    .live-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
-    .live-controls input, .live-controls select { max-width: 260px; }
-    pre.artifact { max-height: 260px; overflow: auto; white-space: pre-wrap; background: #0d141e; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+    .assert-name { color: var(--text); }
+    .assert-detail { color: var(--text-3); font-size: var(--fs-xs); margin-top: 2px; word-break: break-word; }
+    .summary {
+      margin: 18px 0; padding: 16px 18px; border-radius: var(--r-lg); border: 1px solid var(--hairline);
+      background: var(--surface); font-size: var(--fs-body);
+    }
+    .section-title { margin: 28px 0 6px; font-size: var(--fs-title); }
+    .live-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+    .live-controls input, .live-controls select { max-width: 280px; }
+    pre.artifact {
+      max-height: 280px; overflow: auto; white-space: pre-wrap;
+      background: var(--surface-2); border: 1px solid var(--hairline);
+      border-radius: var(--r-md); padding: 14px;
+      font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6; color: var(--text-2);
+    }
     @media (max-width: 900px) { .test-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 
 <body>
-  <header class="app-header">
+  <header class="topbar">
     <div class="brand">
       <div class="logo" aria-hidden="true">✓</div>
       <div class="brand-text">
         <h1>Self-test — content-type aware metadata</h1>
-        <p class="tagline">
+        <p>
           Renders two genuine images (one single background, one multi-element poster/template pack), runs them
           through the real detection, prompt, validation and CSV layers, and checks the acceptance criteria.
         </p>
       </div>
     </div>
-    <div class="header-actions">
+    <div class="topbar-actions">
       <a class="btn btn-ghost btn-sm" href="../index.html">← Back to the app</a>
     </div>
   </header>
