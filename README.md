@@ -1,5 +1,11 @@
 # Microstock Metadata Generator
 
+[![tests](https://github.com/rasedulzihadai-gif/microstock-metadata/actions/workflows/tests.yml/badge.svg)](https://github.com/rasedulzihadai-gif/microstock-metadata/actions/workflows/tests.yml)
+[![deploy](https://github.com/rasedulzihadai-gif/microstock-metadata/actions/workflows/deploy.yml/badge.svg)](https://github.com/rasedulzihadai-gif/microstock-metadata/actions/workflows/deploy.yml)
+
+**Live app:** <https://rasedulzihadai-gif.github.io/microstock-metadata/> ·
+**Self-test page:** <https://rasedulzihadai-gif.github.io/microstock-metadata/tests/browser-test.html>
+
 Type-aware metadata (titles, keywords, categories, bulk-upload CSVs) for four stock marketplaces —
 **Adobe Stock, Shutterstock, Freepik and iStock/Getty** — with a first-class distinction between the two
 product types that buyers search for completely differently.
